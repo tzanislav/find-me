@@ -1,0 +1,42 @@
+{
+  "image": "data/noise-map.png",
+  "width": 1398,
+  "height": 936,
+  "note": "Image pixel (u, v) -> local metres around src/geo.ts CENTER: x = s(cos r*u + sin r*v) + tx, y = s(sin r*u - cos r*v) + ty",
+  "transform": {
+    "scale": 1.7620686119349767,
+    "rotation": 0.025614980671243088,
+    "tx": -1540.6144478690726,
+    "ty": 800.271077131507
+  },
+  "corners": [
+    {
+      "u": 0,
+      "v": 0,
+      "lat": 42.704701,
+      "lng": 23.305269
+    },
+    {
+      "u": 1398,
+      "v": 0,
+      "lat": 42.705269,
+      "lng": 23.335369
+    },
+    {
+      "u": 1398,
+      "v": 936,
+      "lat": 42.690433,
+      "lng": 23.335885
+    },
+    {
+      "u": 0,
+      "v": 936,
+      "lat": 42.689865,
+      "lng": 23.305786
+    }
+  ],
+  "fit": {
+    "meanRoadDistanceM": 10.74,
+    "roadPixelsWithin10m": 0.773
+  }
+}

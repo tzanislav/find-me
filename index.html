@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Find Me · prototype</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top 2/3: map -->
+      <section id="map-panel">
+        <div id="map"></div>
+
+        <div class="map-overlay top-right panel">
+          <div class="title">FIND ME <span class="badge">PROTOTYPE</span></div>
+          <div class="muted small">One person in this zone recorded the sound below. Find them.</div>
+          <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>
+          <div id="selected" class="profile"></div>
+          <div class="row">
+            <button id="btn-submit" disabled>Accuse</button>
+            <button id="btn-new">New round</button>
+          </div>
+          <div id="result"></div>
+        </div>
+
+        <div class="map-overlay bottom-left panel" id="legend"></div>
+      </section>
+
+      <!-- Bottom 1/3: spectrogram -->
+      <section id="spectro-panel">
+        <div id="spectro-toolbar">
+          <button id="btn-play">Play</button>
+          <span id="time-readout">00.0 s</span>
+          <label><input type="checkbox" id="toggle-sound" checked /> Sound</label>
+          <span class="sep"></span>
+          <label>Tag as <select id="tag-kind"></select></label>
+          <button id="btn-tag">Tag at playhead (T)</button>
+          <button id="btn-clear-tags">Clear tags</button>
+          <span class="hint">Click or drag on the spectrogram to scrub. The map shows every source at that moment.</span>
+        </div>
+        <div id="spectro-wrap"><canvas id="spectro"></canvas></div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
