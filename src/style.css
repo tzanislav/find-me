@@ -314,3 +314,43 @@ label { text-transform: uppercase; font-size: 12px; }
 .win { color: var(--green); text-shadow: 0 0 6px var(--green); letter-spacing: 0.1em; }
 #result:empty { display: none; }
 
+
+/* ---------- Loading overlay ---------- */
+#loading {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: rgba(2, 3, 15, 0.72); /* the map stays visible, faded, behind it */
+  transition: opacity 0.25s;
+}
+#loading.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.loading-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(48px, 9vw, 120px);
+  letter-spacing: 0.3em;
+  padding-left: 0.3em; /* balance the trailing letter spacing so it stays centred */
+  color: #fff;
+  text-shadow: 0 0 12px var(--cyan), 0 0 36px var(--blue), 0 0 80px rgba(30, 70, 255, 0.8);
+  animation: loading-pulse 1.6s ease-in-out infinite;
+}
+.loading-status {
+  font-family: var(--mono);
+  font-size: 16px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cyan);
+  text-shadow: 0 0 8px var(--cyan);
+}
+@keyframes loading-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}

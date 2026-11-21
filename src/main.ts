@@ -16,8 +16,9 @@ import {
   type SourceKind,
   type Track,
 } from './sources';
-import { simulate } from './sim';
+import { simulate, type SpectralProfiles } from './sim';
 import { renderListenerAudio, type AudioAssets } from './audio/render';
+import { profileLoop } from './audio/profile';
 import { loadSamples } from './audio/samples';
 import { loadNoiseMap } from './noisemap';
 import { ClipPlayer } from './audio/player';
@@ -34,6 +35,8 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // ---------- State ----------
 let world: World | null = null;
 let audioAssets: AudioAssets | null = null;
+/** Recorded sources the spectrogram draws from their actual recording. */
+let spectralProfiles: SpectralProfiles = {};
 let round: Round | null = null;
 let time = 0;
 let playing = false;
@@ -55,7 +58,9 @@ const map = L.map('map', {
   zoomSnap: 0.25,
   zoomControl: false,
 });
-map.fitBounds(box);
+/** Start this many zoom levels closer than "whole play box fits". */
+const START_ZOOM_IN = 0.75;
+map.setView(box.getCenter(), map.getBoundsZoom(box) + START_ZOOM_IN);
 map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap contributors');
 
 map.createPane('basemap').style.zIndex = '150';
@@ -209,27 +214,65 @@ const spectro = new SpectrogramView($<HTMLCanvasElement>('spectro'), (t) => {
 });
 
 // ---------- Rounds ----------
-function newRound() {
-  if (!world) return;
-  const seed = Math.floor(Math.random() * 2 ** 31);
-  round = generateRound(world, seed);
-  revealed = false;
-  tags = [];
-  revealLayer.clearLayers();
-  buildSourceLayers(round.sources);
-  buildPedestrianLayer(round.pedestrians);
-  select(null);
-  $('result').textContent = '';
-  spectro.setTags(tags);
-  spectro.setData(simulate(round.sources, round.target, seed));
-  if (audioAssets) {
-    const t0 = performance.now();
-    player.setSamples(renderListenerAudio(round.sources, round.target, seed, audioAssets));
-    console.info(`Audio rendered in ${Math.round(performance.now() - t0)} ms`);
-  }
+// ---------- Loading overlay ----------
+const loadingEl = $('loading');
+const loadingStatus = $('loading-status');
+
+function setLoading(status: string | null) {
+  loadingEl.classList.toggle('hidden', status === null);
+  if (status !== null) loadingStatus.textContent = status;
+}
+
+/** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
+const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+
+let building = false;
+
+async function newRound() {
+  if (!world || building) return;
+  building = true;
   setPlaying(false);
-  setTime(0);
-  console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
+  try {
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    const minutes = Math.round(CLIP_SECONDS / 60);
+    const step = async (status: string) => {
+      setLoading(status);
+      await nextPaint();
+    };
+    const timed = <T,>(label: string, fn: () => T): T => {
+      const t0 = performance.now();
+      const out = fn();
+      console.info(`${label} in ${Math.round(performance.now() - t0)} ms`);
+      return out;
+    };
+
+    await step('Generating traffic and people');
+    const next = timed('Round generated', () => generateRound(world!, seed));
+    await step(`Simulating ${minutes} minutes of city sound`);
+    const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles));
+    let audio: Float32Array | null = null;
+    if (audioAssets) {
+      await step('Rendering the recording');
+      audio = timed('Audio rendered', () => renderListenerAudio(next.sources, next.target, seed, audioAssets!));
+    }
+
+    round = next;
+    revealed = false;
+    tags = [];
+    revealLayer.clearLayers();
+    buildSourceLayers(round.sources);
+    buildPedestrianLayer(round.pedestrians);
+    select(null);
+    $('result').textContent = '';
+    spectro.setTags(tags);
+    spectro.setData(spec);
+    if (audio) player.setSamples(audio);
+    setTime(0);
+    console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
+  } finally {
+    building = false;
+    setLoading(null);
+  }
 }
 
 function reveal() {
@@ -343,21 +386,31 @@ $<HTMLInputElement>('toggle-paths').addEventListener('change', (e) => {
 });
 
 $('btn-submit').addEventListener('click', reveal);
-$('btn-new').addEventListener('click', newRound);
+$('btn-new').addEventListener('click', () => void newRound());
+$('btn-zoom-in').addEventListener('click', () => spectro.zoomIn());
+$('btn-zoom-out').addEventListener('click', () => spectro.zoomOut());
+$('btn-zoom-fit').addEventListener('click', () => spectro.resetZoom());
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser zoom shortcuts alone
   if (e.code === 'Space') {
     e.preventDefault();
     setPlaying(!playing);
   } else if (e.key.toLowerCase() === 't') {
     addTag();
+  } else if (e.key === '+' || e.key === '=') {
+    spectro.zoomIn();
+  } else if (e.key === '-') {
+    spectro.zoomOut();
+  } else if (e.key === '0') {
+    spectro.resetZoom();
   }
 });
 
 // ---------- Boot ----------
 async function boot() {
-  $('result').textContent = 'Loading map data...';
+  setLoading('Loading map data');
   const noiseMap = loadNoiseMap().catch((err) => {
     console.error('Noise map failed to load, traffic bed uses a flat level', err);
     return null;
@@ -367,17 +420,26 @@ async function boot() {
     return null;
   });
   const osm = await loadOsm();
+  setLoading('Loading sounds');
   addBasemap(map, 'basemap', osm).catch((err) => console.error('Basemap failed to render', err));
   world = buildWorld(osm);
   const bank = await samples;
-  if (bank) audioAssets = { samples: bank, noiseMap: await noiseMap };
+  if (bank) {
+    audioAssets = { samples: bank, noiseMap: await noiseMap };
+    spectralProfiles = {
+      construction: profileLoop(bank.construction),
+      city: profileLoop(bank.city),
+      bell: profileLoop(bank.bell, true),
+    };
+  }
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,
   );
-  newRound();
+  await newRound();
 }
 
 boot().catch((err) => {
   console.error(err);
   $('result').textContent = 'Failed to load map data. See console.';
+  setLoading('Failed to load. See console.');
 });

@@ -9,16 +9,17 @@
 // gets no reverb.
 //
 // Under everything is a traffic bed whose level follows the noise map at the
-// listener's position.
+// listener's position, and a city background recording at a constant level.
 //
-// Sources with audio so far: ambulance (synthesised), police, tram, airplane.
+// Sources with audio so far: ambulance (synthesised), police, tram, airplane, construction,
+// bell (rings once, see OneShotVoice).
 
 import { distanceGainDb, hearingRange, propagate } from '../sim';
 import type { NoiseMap } from '../noisemap';
 import { CLIP_SECONDS, isActive, positionAt, type SoundSource, type SourceKind, type Track } from '../sources';
-import { AUDIO_SAMPLE_RATE } from './constants';
+import { AUDIO_SAMPLE_RATE, CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from './constants';
 import { Lowpass, applyReverb } from './dsp';
-import { LoopVoice, type SampleBank, type SampleName } from './samples';
+import { LoopVoice, OneShotVoice, isOneShot, type SampleBank, type SampleName } from './samples';
 import { SirenVoice } from './siren';
 
 export { AUDIO_SAMPLE_RATE };
@@ -60,6 +61,8 @@ const VOICES: Partial<Record<SourceKind, { sample?: SampleName; reverb: boolean 
   police: { sample: 'police', reverb: true },
   tram: { sample: 'tram', reverb: true },
   airplane: { sample: 'airplane', reverb: false },
+  construction: { sample: 'construction', reverb: true },
+  bell: { sample: 'bell', reverb: true },
 };
 
 const dbToAmp = (db: number) => Math.pow(10, db / 20);
@@ -157,6 +160,13 @@ function addTrafficBed(out: Float32Array, listener: Track, assets: AudioAssets) 
   }
 }
 
+/** City background recording at a constant level, always audible. No distance processing. */
+function addCityBackground(out: Float32Array, assets: AudioAssets, seed: number) {
+  const amp = dbToAmp(CITY_BACKGROUND_DB - FULL_SCALE_DB);
+  const voice = new LoopVoice(assets.samples.city, cityOffsetS(seed));
+  for (let i = 0; i < out.length; i++) out[i] += amp * voice.next(i / AUDIO_SAMPLE_RATE);
+}
+
 export function renderListenerAudio(
   sources: SoundSource[],
   listener: Track,
@@ -170,9 +180,12 @@ export function renderListenerAudio(
   sources.forEach((src, i) => {
     const spec = VOICES[src.kind];
     if (!spec) return;
-    // Different start offsets keep vehicles of one kind from sounding in lockstep.
-    const offset = ((seed % 997) + i * 7.31) % 60;
-    const voice: Voice = spec.sample ? new LoopVoice(assets.samples[spec.sample], offset) : new SirenVoice(offset);
+    const offset = voiceOffsetS(seed, i);
+    const voice: Voice = !spec.sample
+      ? new SirenVoice(offset)
+      : isOneShot(spec.sample)
+        ? new OneShotVoice(assets.samples[spec.sample])
+        : new LoopVoice(assets.samples[spec.sample], offset);
     renderSource(src, voice, spec.reverb, listener, out, bus);
   });
 
@@ -180,6 +193,7 @@ export function renderListenerAudio(
   for (let i = 0; i < len; i++) out[i] += wet[i];
 
   addTrafficBed(out, listener, assets);
+  addCityBackground(out, assets, seed);
   for (let i = 0; i < len; i++) out[i] = Math.tanh(out[i]); // soft limit, never hard clips
   return out;
 }

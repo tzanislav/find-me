@@ -1,17 +1,24 @@
-// Recorded sounds, decoded once at boot into seamless mono loops at the render rate.
+// Recorded sounds, decoded once at boot into mono at the render rate: seamless
+// loops for continuous sources, or as-is for one-shot events like the bell.
 
 import { AUDIO_SAMPLE_RATE } from './constants';
 
-export type SampleName = 'police' | 'tram' | 'airplane' | 'traffic';
+export type SampleName = 'police' | 'tram' | 'airplane' | 'traffic' | 'construction' | 'city' | 'bell';
 
-const FILES: Record<SampleName, { url: string; crossfadeS: number }> = {
+/** A one-shot sample plays once from its source's start time instead of looping. */
+const FILES: Record<SampleName, { url: string; crossfadeS: number; oneShot?: boolean }> = {
   police: { url: 'audio/police-siren.mp3', crossfadeS: 0.15 },
   tram: { url: 'audio/tram.mp3', crossfadeS: 0.4 },
   airplane: { url: 'audio/airplane.mp3', crossfadeS: 2 },
   traffic: { url: 'audio/traffic.mp3', crossfadeS: 3 },
+  construction: { url: 'audio/construction.mp3', crossfadeS: 0.5 },
+  city: { url: 'audio/city-background.mp3', crossfadeS: 3 },
+  bell: { url: 'audio/church-bell.mp3', crossfadeS: 0, oneShot: true },
 };
 
-/** Every loop has an RMS of 1, so a source's levelDb sets its loudness directly. */
+export const isOneShot = (name: SampleName) => FILES[name].oneShot === true;
+
+/** Every sample has an RMS of 1, so a source's levelDb sets its loudness directly. */
 export type SampleBank = Record<SampleName, Float32Array>;
 
 /**
@@ -37,7 +44,7 @@ function normalizeRms(x: Float32Array): Float32Array {
   return x;
 }
 
-async function loadOne(ctx: BaseAudioContext, url: string, crossfadeS: number): Promise<Float32Array> {
+async function loadOne(ctx: BaseAudioContext, url: string, crossfadeS: number, oneShot: boolean): Promise<Float32Array> {
   const buf = await ctx.decodeAudioData(await (await fetch(url)).arrayBuffer());
   // Mix down to mono
   const mono = new Float32Array(buf.length);
@@ -45,15 +52,15 @@ async function loadOne(ctx: BaseAudioContext, url: string, crossfadeS: number): 
     const ch = buf.getChannelData(c);
     for (let i = 0; i < mono.length; i++) mono[i] += ch[i] / buf.numberOfChannels;
   }
-  return normalizeRms(makeLoop(mono, Math.round(crossfadeS * AUDIO_SAMPLE_RATE)));
+  return normalizeRms(oneShot ? mono : makeLoop(mono, Math.round(crossfadeS * AUDIO_SAMPLE_RATE)));
 }
 
 export async function loadSamples(): Promise<SampleBank> {
   // Decoding into a context at the render rate also resamples. No user gesture needed.
   const ctx = new OfflineAudioContext(1, 1, AUDIO_SAMPLE_RATE);
   const names = Object.keys(FILES) as SampleName[];
-  const loops = await Promise.all(names.map((n) => loadOne(ctx, FILES[n].url, FILES[n].crossfadeS)));
-  return Object.fromEntries(names.map((n, i) => [n, loops[i]])) as SampleBank;
+  const decoded = await Promise.all(names.map((n) => loadOne(ctx, FILES[n].url, FILES[n].crossfadeS, isOneShot(n))));
+  return Object.fromEntries(names.map((n, i) => [n, decoded[i]])) as SampleBank;
 }
 
 /** Plays a loop at any source time, with linear interpolation, so Doppler can bend its pitch. */
@@ -70,5 +77,18 @@ export class LoopVoice {
     const i = Math.floor(p);
     const f = p - i;
     return this.loop[i] + (this.loop[(i + 1) % n] - this.loop[i]) * f;
+  }
+}
+
+/** Plays a sample once from source time 0, silent before and after. */
+export class OneShotVoice {
+  constructor(private readonly sample: Float32Array) {}
+
+  next(t: number): number {
+    const p = t * AUDIO_SAMPLE_RATE;
+    const i = Math.floor(p);
+    if (i < 0 || i + 1 >= this.sample.length) return 0;
+    const f = p - i;
+    return this.sample[i] + (this.sample[i + 1] - this.sample[i]) * f;
   }
 }

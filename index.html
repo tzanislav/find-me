@@ -7,6 +7,11 @@
     <link rel="icon" href="data:," />
   </head>
   <body>
+    <!-- Shown while a round is being simulated; the map stays faded in the back -->
+    <div id="loading">
+      <div class="loading-title">LOADING</div>
+      <div id="loading-status" class="loading-status">Loading map data</div>
+    </div>
     <div id="app">
       <!-- Top 2/3: map -->
       <section id="map-panel">
@@ -39,7 +44,11 @@
           <label>Tag as <select id="tag-kind"></select></label>
           <button id="btn-tag">Tag at playhead (T)</button>
           <button id="btn-clear-tags">Clear tags</button>
-          <span class="hint">Click or drag on the spectrogram to scrub. The map shows every source at that moment.</span>
+          <span class="sep"></span>
+          <button id="btn-zoom-out" title="Zoom out (-)">−</button>
+          <button id="btn-zoom-in" title="Zoom in (+)">+</button>
+          <button id="btn-zoom-fit" title="Show whole clip (0)">Fit</button>
+          <span class="hint">Click or drag to scrub. Wheel zooms time, Shift+wheel zooms frequency, right-drag pans, double-click resets.</span>
         </div>
         <div id="spectro-wrap"><canvas id="spectro"></canvas></div>
       </section>

@@ -63,7 +63,7 @@ export interface SoundSource extends Track {
   levelDb: number; // sound level at 1 m
 }
 
-export const CLIP_SECONDS = 180; // playable clip
+export const CLIP_SECONDS = 600; // playable clip
 /** Simulated before the clip so traffic is already spread out at t = 0. Never shown or heard. */
 export const PREHEAT_SECONDS = 90;
 
@@ -88,20 +88,18 @@ export function makeSource(
 
 const fromLatLngs = (pts: [number, number][]) => pts.map(([lat, lng]) => toLocal({ lat, lng }));
 
-/** Hand-placed sources that are the same every round. Road vehicles and trams come from scenario.ts. */
-export const FIXED_SOURCES: SoundSource[] = [
-  makeSource('air1', 'airplane', 'Airliner on approach', fromLatLngs([
-    [42.7120, 23.2930],
-    [42.6840, 23.3660],
-  ]), { speed: 75, start: 0, altitude: 700, levelDb: 140 }),
+/**
+ * Hand-placed sources that are the same every round. Road vehicles, trams,
+ * construction sites and the airplane are placed per round in scenario.ts.
+ */
+/** Length of public/audio/church-bell.mp3, which rings once from the bell's start time. */
+const BELL_RING_S = 41;
+const BELL_START_S = 25;
 
+export const FIXED_SOURCES: SoundSource[] = [
   makeSource('bell1', 'bell', 'Alexander Nevsky Cathedral', fromLatLngs([
     [42.6959, 23.3328],
-  ]), { start: 25, end: 48, levelDb: 122 }),
-
-  makeSource('con1', 'construction', 'Construction site', fromLatLngs([
-    [42.7012, 23.3160],
-  ]), { start: 0, end: CLIP_SECONDS, levelDb: 112 }),
+  ]), { start: BELL_START_S, end: BELL_START_S + BELL_RING_S, levelDb: 122 }),
 ];
 
 export const isMoving = (src: Track) => src.speed > 0 && src.path.length > 1;

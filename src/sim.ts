@@ -5,6 +5,8 @@
 import type { Vec } from './geo';
 import { mulberry32 } from './rng';
 import { AMBULANCE_SIREN, wailHz, yelpHz } from './audio/siren';
+import { CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from './audio/constants';
+import type { SampleProfile } from './audio/profile';
 import { CLIP_SECONDS, isActive, positionAt, type SoundSource, type SourceKind, type Track } from './sources';
 
 export const COLS_PER_SEC = 10;
@@ -19,7 +21,7 @@ const AIR_ABSORPTION_DB_PER_KHZ_KM = 4; // crude high-frequency loss with distan
 /** How far a pedestrian can hear. Sources beyond this are silent. */
 export const HEARING_RANGE_M = 300;
 /** The plane flies at 700 m, so it is exempt from the normal range. */
-const AIRPLANE_RANGE_M = 3000;
+export const AIRPLANE_RANGE_M = 3000;
 /** Fade out over the last stretch of the range so sources don't pop in and out. */
 const RANGE_FADE_FRACTION = 1 / 6;
 
@@ -57,6 +59,24 @@ export interface Spectrogram {
 interface Emit {
   tone(freq: number, db: number, widthHz?: number): void;
   band(fLo: number, fHi: number, db: number, tiltDbPerOctave?: number): void;
+  /** A recording's per-bin power shares, scaled to `db` in total and pitch-shifted by `dop`. */
+  spectrum(shares: Float32Array, db: number, dop: number): void;
+}
+
+/** Spectral profiles of recorded sources. A kind listed here is drawn from its recording. */
+export type SpectralProfiles = Partial<Record<SourceKind | 'city', SampleProfile>>;
+
+/**
+ * The profile frame playing at source time `lt`, matching LoopVoice and
+ * OneShotVoice in samples.ts. Null when a one-shot is not playing.
+ */
+function profileFrame(p: SampleProfile, lt: number, offsetS: number): Float32Array | null {
+  if (p.oneShot) {
+    const f = Math.floor(lt / p.frameS);
+    return f >= 0 && f < p.frames.length ? p.frames[f] : null;
+  }
+  const pos = (((lt + offsetS) % p.loopS) + p.loopS) % p.loopS;
+  return p.frames[Math.min(p.frames.length - 1, Math.floor(pos / p.frameS))];
 }
 
 const dbToPow = (db: number) => Math.pow(10, db / 10);
@@ -148,7 +168,7 @@ function signature(kind: SourceKind, lt: number, dop: number, L: number, e: Emit
 }
 
 /** Spectrogram of what `listener` hears while moving along its track. */
-export function simulate(sources: SoundSource[], listener: Track, seed = 1): Spectrogram {
+export function simulate(sources: SoundSource[], listener: Track, seed = 1, profiles: SpectralProfiles = {}): Spectrogram {
   const rnd = mulberry32(seed);
   const pow = new Float32Array(COLS * BINS);
 
@@ -179,21 +199,40 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1): Spe
           pow[base + b] += dbToPow(level);
         }
       },
+      spectrum(shares, db, dop) {
+        const total = dbToPow(db);
+        for (let b = 0; b < BINS; b++) {
+          if (shares[b] === 0) continue;
+          const to = Math.round((b + 0.5) * dop - 0.5); // Doppler moves energy up or down in pitch
+          if (to < 0 || to >= BINS) continue;
+          const fb = (to + 0.5) * HZ_PER_BIN;
+          pow[base + to] += total * shares[b] * dbToPow(-absorbPerKhz * (fb / 1000));
+        }
+      },
     });
 
-    // City background noise floor (pinkish, flickering)
-    makeEmit(0).band(20, MAX_HZ, 40 + (rnd() - 0.5) * 4, -3);
-    for (let b = 0; b < BINS; b++) pow[base + b] *= 0.6 + 0.8 * rnd();
-
-    for (const src of sources) {
-      const { te, tau, d, doppler } = propagate(src, here, t);
-      if (!isActive(src, te)) continue;
-      const gain = distanceGainDb(d, hearingRange(src));
-      if (gain === null) continue;
-      const received = src.levelDb + gain;
-      const absorbPerKhz = AIR_ABSORPTION_DB_PER_KHZ_KM * (d / 1000);
-      signature(src.kind, tau - src.start, doppler, received, makeEmit(absorbPerKhz), rnd);
+    // City background: the real recording when loaded (as heard in the audio),
+    // otherwise a synthetic pinkish, flickering noise floor.
+    if (profiles.city) {
+      makeEmit(0).spectrum(profileFrame(profiles.city, t, cityOffsetS(seed))!, CITY_BACKGROUND_DB, 1);
+    } else {
+      makeEmit(0).band(20, MAX_HZ, 40 + (rnd() - 0.5) * 4, -3);
+      for (let b = 0; b < BINS; b++) pow[base + b] *= 0.6 + 0.8 * rnd();
     }
+
+    sources.forEach((src, i) => {
+      const { te, tau, d, doppler } = propagate(src, here, t);
+      if (!isActive(src, te)) return;
+      const gain = distanceGainDb(d, hearingRange(src));
+      if (gain === null) return;
+      const received = src.levelDb + gain;
+      const emit = makeEmit(AIR_ABSORPTION_DB_PER_KHZ_KM * (d / 1000));
+      const profile = profiles[src.kind];
+      if (profile) {
+        const frame = profileFrame(profile, tau - src.start, voiceOffsetS(seed, i));
+        if (frame) emit.spectrum(frame, received, doppler);
+      } else signature(src.kind, tau - src.start, doppler, received, emit, rnd);
+    });
   }
 
   const db = new Float32Array(COLS * BINS);

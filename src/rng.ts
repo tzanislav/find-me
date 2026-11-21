@@ -15,3 +15,13 @@ export function mulberry32(seed: number): Rng {
 export const range = (rnd: Rng, [lo, hi]: [number, number]) => lo + (hi - lo) * rnd();
 export const randInt = (rnd: Rng, [lo, hi]: [number, number]) => lo + Math.floor((hi - lo + 1) * rnd());
 export const pick = <T>(rnd: Rng, arr: T[]): T => arr[Math.floor(rnd() * arr.length)];
+
+/** Fisher-Yates shuffle into a new array. */
+export function shuffle<T>(rnd: Rng, arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}

@@ -159,18 +159,103 @@ export function randomRoute(
 
   for (let attempt = 0; attempt < (opts.tries ?? 12); attempt++) {
     const start = startable[Math.floor(rnd() * startable.length)];
-    const from = g.nodes[start];
+    const path = routeFrom(g, rnd, start, opts);
+    if (path) return path.map((i) => g.nodes[i]);
+  }
+  return null;
+}
 
-    // Sample destinations, try the farthest ones first.
-    const candidates: number[] = [];
-    for (let k = 0; k < (opts.candidates ?? 40); k++) candidates.push(Math.floor(rnd() * g.nodes.length));
-    candidates.sort((a, b) => dist(g.nodes[b], from) - dist(g.nodes[a], from));
+/**
+ * Route from `start` to a destination chosen to be far away (node ids), or null.
+ * `notVia`: reject routes whose first step goes to this node, e.g. to stop a
+ * vehicle placed mid-street from turning straight back the way it faces.
+ */
+export function routeFrom(
+  g: Graph,
+  rnd: Rng,
+  start: number,
+  opts: { minDistance: number; candidates?: number; notVia?: number },
+): number[] | null {
+  const from = g.nodes[start];
+  // Sample destinations, try the farthest ones first.
+  const candidates: number[] = [];
+  for (let k = 0; k < (opts.candidates ?? 40); k++) candidates.push(Math.floor(rnd() * g.nodes.length));
+  candidates.sort((a, b) => dist(g.nodes[b], from) - dist(g.nodes[a], from));
 
-    for (const goal of candidates.slice(0, 5)) {
-      if (dist(g.nodes[goal], from) < opts.minDistance) break;
-      const path = aStar(g, start, goal);
-      if (path && path.length > 1) return path.map((i) => g.nodes[i]);
+  for (const goal of candidates.slice(0, 5)) {
+    if (dist(g.nodes[goal], from) < opts.minDistance) break;
+    const path = aStar(g, start, goal);
+    if (path && path.length > 1 && path[1] !== opts.notVia) return path;
+  }
+  return null;
+}
+
+// ---------- Spreading things evenly over an area ----------
+// The square [-half, half]² is split into grid × grid cells. Each cell lists the
+// graph edges that pass through it, so things can be placed one per cell.
+
+export interface EdgeRef {
+  from: number;
+  edge: Edge;
+}
+
+/** A point `f` of the way along an edge. */
+export const pointOnEdge = (g: Graph, ref: EdgeRef, f: number): Vec => {
+  const a = g.nodes[ref.from];
+  const b = g.nodes[ref.edge.to];
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+};
+
+/** Cell index of a point, or -1 outside the grid. */
+export function cellIndex(v: Vec, grid: number, half: number): number {
+  const cx = Math.floor(((v.x + half) / (2 * half)) * grid);
+  const cy = Math.floor(((v.y + half) / (2 * half)) * grid);
+  if (cx < 0 || cy < 0 || cx >= grid || cy >= grid) return -1;
+  return cy * grid + cx;
+}
+
+const cellEdgesCache = new WeakMap<Graph, Map<string, EdgeRef[][]>>();
+
+/** For every grid cell, the edges that pass through it. Cached per graph and grid. */
+export function cellEdges(g: Graph, grid: number, half: number): EdgeRef[][] {
+  const key = `${grid}/${half}`;
+  let byGrid = cellEdgesCache.get(g);
+  if (!byGrid) cellEdgesCache.set(g, (byGrid = new Map()));
+  const cached = byGrid.get(key);
+  if (cached) return cached;
+
+  const cells: EdgeRef[][] = Array.from({ length: grid * grid }, () => []);
+  g.adj.forEach((edges, from) => {
+    for (const edge of edges) {
+      const seen = new Set<number>();
+      const steps = Math.ceil(edge.len / 5) + 1; // sample every ~5 m
+      for (let k = 0; k <= steps; k++) {
+        const c = cellIndex(pointOnEdge(g, { from, edge }, k / steps), grid, half);
+        if (c >= 0 && !seen.has(c)) {
+          seen.add(c);
+          cells[c].push({ from, edge });
+        }
+      }
     }
+  });
+  byGrid.set(key, cells);
+  return cells;
+}
+
+/** A random point on an edge inside cell c: the edge and how far along it, or null if none. */
+export function spotInCell(
+  g: Graph,
+  rnd: Rng,
+  refs: EdgeRef[],
+  c: number,
+  grid: number,
+  half: number,
+): { ref: EdgeRef; f: number } | null {
+  if (refs.length === 0) return null;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const ref = refs[Math.floor(rnd() * refs.length)];
+    const f = rnd();
+    if (cellIndex(pointOnEdge(g, ref, f), grid, half) === c) return { ref, f };
   }
   return null;
 }
