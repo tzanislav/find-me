@@ -7,6 +7,7 @@ export interface Profile {
   lastName: string;
   age: number;
   occupation: string;
+  sex: 'male' | 'female'; // picks the silhouette in the inspector
 }
 
 const MALE_FIRST = [
@@ -25,8 +26,9 @@ const SURNAMES = [
   'Atanasov', 'Petkov', 'Angelov', 'Kolev', 'Yordanov', 'Marinov', 'Popov', 'Stefanov', 'Mihaylov', 'Kostov',
   'Dobrev', 'Zhelev', 'Penev', 'Slavov', 'Rusev', 'Bozhilov', 'Kirilov', 'Tsvetkov', 'Rangelov', 'Mladenov',
 ];
-const VISITORS: { first: string[]; last: string[] } = {
-  first: ['James', 'Emma', 'Lukas', 'Sofia', 'Marco', 'Anna', 'Tom', 'Chloé', 'Mateusz', 'Ingrid', 'Kenji', 'Leila'],
+const VISITORS = {
+  male: ['James', 'Lukas', 'Marco', 'Tom', 'Mateusz', 'Kenji'],
+  female: ['Emma', 'Sofia', 'Anna', 'Chloé', 'Ingrid', 'Leila'],
   last: ['Smith', 'Müller', 'Rossi', 'Novak', 'Kowalski', 'Dubois', 'Jensen', 'Tanaka', 'García', 'Brown', 'Haddad'],
 };
 
@@ -67,11 +69,13 @@ const VISITOR_SHARE = 0.12;
 
 export function randomProfile(rnd: Rng): Profile {
   if (rnd() < VISITOR_SHARE) {
+    const female = rnd() < 0.5;
     return {
-      firstName: pick(rnd, VISITORS.first),
+      firstName: pick(rnd, female ? VISITORS.female : VISITORS.male),
       lastName: pick(rnd, VISITORS.last),
       age: randInt(rnd, [20, 72]),
       occupation: 'Tourist',
+      sex: female ? 'female' : 'male',
     };
   }
   const female = rnd() < 0.5;
@@ -82,5 +86,6 @@ export function randomProfile(rnd: Rng): Profile {
     lastName: female ? `${surname}a` : surname,
     age: randInt(rnd, job.age),
     occupation: job.title,
+    sex: female ? 'female' : 'male',
   };
 }

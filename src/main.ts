@@ -29,6 +29,9 @@ import { FieldGuide } from './guide';
 import { loadOsm } from './osm';
 import { buildWorld, generateRound, type Round, type World } from './scenario';
 import type { Pedestrian } from './pedestrians';
+import { TOWER_COLOR, TOWER_RANGE_M, nearestTower, towerIconSvg, type Tower } from './towers';
+import { emptyHtml, fullName, personHtml, targetHtml, towerHtml } from './inspector';
+import { holdingIn } from './hold';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,8 +44,13 @@ let round: Round | null = null;
 let time = 0;
 let playing = false;
 let tags: Tag[] = [];
-let selected: Pedestrian | null = null;
-let revealed = false;
+/** What the inspector shows. Indices into round.towers / round.pedestrians. */
+type Selection = { kind: 'tower'; i: number } | { kind: 'person'; i: number } | null;
+let selection: Selection = null;
+/** People whose data (name, number, profile) a tower has revealed. Indices into round.pedestrians. */
+const revealedPeds = new Set<number>();
+/** Set once the player arrests someone; the round is over. */
+let arrested: Pedestrian | null = null;
 
 const ll = (v: Vec): L.LatLngExpression => {
   const p = toLatLng(v);
@@ -106,17 +114,20 @@ for (const l of LABELS) {
 const kindStyle = document.createElement('style');
 kindStyle.textContent =
   (Object.keys(KINDS) as SourceKind[]).map((k) => `.c-${k}{color:${KINDS[k].color}}`).join('') +
-  '.c-zone{color:#5ad1ff}.c-hit{color:#ff3b5c}';
+  `.c-zone{color:#5ad1ff}.c-hit{color:#ff3b5c}.c-tower{color:${TOWER_COLOR}}`;
 document.head.appendChild(kindStyle);
 
 // ---------- Source layers (rebuilt every round) ----------
 // Moving sources are drawn as their vehicle icon only, with no route.
 // Fixed sources (bells, construction) also get a ring marking where they are.
 const zones = L.layerGroup().addTo(map);
+const rangeLayer = L.layerGroup().addTo(map);
+const towerLayer = L.layerGroup().addTo(map);
 const sourceLayer = L.layerGroup().addTo(map);
 const pedLayer = L.layerGroup().addTo(map);
 const revealLayer = L.layerGroup().addTo(map);
 let sourceMarkers: L.Marker[] = [];
+let towerMarkers: L.Marker[] = [];
 let pedMarkers: L.Marker[] = [];
 const hitLine = L.polyline([], { color: '#ff3b5c', weight: 2, className: 'neon-line c-hit', interactive: false });
 
@@ -134,20 +145,23 @@ function routeDuringClip(tr: Track): Vec[] {
   return pts;
 }
 
+/** Zone rings of fixed sources, by source index. */
+let zoneCircles: (L.Circle | null)[] = [];
+
+/** Builds markers for every source, but they only go on the map once their data is bought (see showIntel). */
 function buildSourceLayers(sources: SoundSource[]) {
   zones.clearLayers();
   sourceLayer.clearLayers();
 
-  for (const src of sources) {
-    if (isMoving(src)) continue;
+  zoneCircles = sources.map((src) => {
+    if (isMoving(src)) return null;
     const k = KINDS[src.kind];
-    L.circle(ll(src.path[0]), { radius: 45, color: k.color, weight: 1.5, dashArray: '3 5', fillOpacity: 0.06, className: `neon-line c-${src.kind}` })
-      .bindTooltip(`${src.name}, active ${src.start}-${src.end}s`, { className: 'neon-tip' })
-      .addTo(zones);
-  }
+    return L.circle(ll(src.path[0]), { radius: 45, color: k.color, weight: 1.5, dashArray: '3 5', fillOpacity: 0.06, className: `neon-line c-${src.kind}` })
+      .bindTooltip(`${src.name}, active ${src.start}-${src.end}s`, { className: 'neon-tip' });
+  });
 
   sourceMarkers = sources.map((src) =>
-    L.marker(ll(positionAt(src, 0)), {
+    L.marker(ll(positionAt(src, time)), {
       icon: L.divIcon({
         className: 'src-marker',
         html: `<div class="src-icon" style="color:${KINDS[src.kind].color}">${iconSvg(src.kind)}</div>`,
@@ -155,46 +169,238 @@ function buildSourceLayers(sources: SoundSource[]) {
       }),
       interactive: false,
       zIndexOffset: 1000, // keep vehicles above the pedestrian crowd
-    }).addTo(sourceLayer),
+    }),
   );
 }
 
-// ---------- Pedestrians ----------
-const fullName = (p: Pedestrian) => `${p.profile.firstName} ${p.profile.lastName}`;
+// ---------- Energy and data access ----------
+const START_ENERGY = 100;
+const INTEL_HOLD_MS = 1000;
+const ARREST_HOLD_MS = 2000;
+/** Cell tower action: names and numbers of everyone connected to it right now. */
+const REVEAL_DATA_COST = 20;
 
-function profileHtml(p: Pedestrian) {
-  return `<div class="ped-name">${fullName(p)}</div><div class="ped-meta">${p.profile.occupation} · ${p.profile.age}</div>`;
+interface Intel {
+  label: string;
+  cost: number;
+  kinds: SourceKind[]; // source icons it puts on the map
+}
+const INTEL: Intel[] = [
+  { label: 'Access Transportation Data', cost: 10, kinds: ['tram'] },
+  { label: 'Access Police Car Data', cost: 20, kinds: ['police'] },
+  { label: 'Access Ambulance Data', cost: 20, kinds: ['ambulance'] },
+  { label: 'Get Air Traffic Data', cost: 25, kinds: ['airplane'] },
+  { label: 'Get Construction Records', cost: 30, kinds: ['construction'] },
+];
+
+let energy = START_ENERGY;
+/** Source kinds whose data has been bought this round. Everything else stays off the map. */
+const unlockedKinds = new Set<SourceKind>();
+
+const intelButtons = INTEL.map((intel, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'intel-btn';
+  btn.dataset.hold = String(INTEL_HOLD_MS);
+  btn.innerHTML = `<span>${intel.label}</span><span class="cost">${intel.cost}</span>`;
+  btn.addEventListener('hold', () => buyIntel(i));
+  $('intel-buttons').appendChild(btn);
+  return btn;
+});
+
+/** Spends energy if there is enough. Running low is never a fail state, it only limits what you can do. */
+function spend(cost: number): boolean {
+  if (energy < cost) return false;
+  energy -= cost;
+  renderEnergy();
+  return true;
 }
 
-function buildPedestrianLayer(people: Pedestrian[]) {
-  pedLayer.clearLayers();
-  pedMarkers = people.map((p) => {
-    const m = L.marker(ll(positionAt(p, 0)), {
-      icon: L.divIcon({ className: 'ped', html: '<span class="ped-dot"></span>', iconSize: [14, 14] }),
-      riseOnHover: true,
-    })
-      .bindTooltip(profileHtml(p), { className: 'neon-tip ped-tip', direction: 'top', offset: [0, -6] })
-      .on('click', () => select(p))
-      .addTo(pedLayer);
-    return m;
+function renderEnergy() {
+  $('energy-value').textContent = String(energy);
+  $('energy-fill').style.width = `${(100 * energy) / START_ENERGY}%`;
+  INTEL.forEach((intel, i) => {
+    const owned = intel.kinds.every((k) => unlockedKinds.has(k));
+    const btn = intelButtons[i];
+    btn.disabled = owned || energy < intel.cost;
+    btn.classList.toggle('owned', owned);
+    btn.querySelector('.cost')!.textContent = owned ? 'Acquired' : String(intel.cost);
   });
 }
 
-function markerOf(p: Pedestrian | null) {
-  if (!p || !round) return null;
-  return pedMarkers[round.pedestrians.indexOf(p)] ?? null;
+renderEnergy();
+
+function buyIntel(i: number) {
+  const intel = INTEL[i];
+  if (!round || intel.kinds.every((k) => unlockedKinds.has(k)) || !spend(intel.cost)) return;
+  intel.kinds.forEach((k) => unlockedKinds.add(k));
+  showIntel();
+  renderEnergy();
 }
 
-function select(p: Pedestrian | null) {
-  if (revealed) return;
-  markerOf(selected)?.getElement()?.classList.remove('selected');
-  selected = p;
-  markerOf(selected)?.getElement()?.classList.add('selected');
-  $<HTMLButtonElement>('btn-submit').disabled = !selected;
-  $('selected').innerHTML = selected
-    ? `<div class="label">Suspect</div>${profileHtml(selected)}`
-    : '<div class="muted">No one selected. Hover the white dots for profiles, click to select.</div>';
+/** Puts the markers and zone rings of unlocked kinds on the map. */
+function showIntel() {
+  if (!round) return;
+  round.sources.forEach((src, i) => {
+    if (!unlockedKinds.has(src.kind)) return;
+    if (!sourceLayer.hasLayer(sourceMarkers[i])) sourceMarkers[i].addTo(sourceLayer);
+    const zone = zoneCircles[i];
+    if (zone && !zones.hasLayer(zone)) zone.addTo(zones);
+  });
+  setTime(time); // fresh marker elements need their state classes
 }
+
+// ---------- Cell towers ----------
+let hoverRange: L.Circle | null = null;
+let selectedRange: L.Circle | null = null;
+
+function rangeCircle(t: Tower): L.Circle {
+  return L.circle(ll(t.pos), {
+    radius: TOWER_RANGE_M,
+    color: TOWER_COLOR,
+    weight: 1.5,
+    dashArray: '8 7',
+    fillColor: TOWER_COLOR,
+    fillOpacity: 0.06,
+    interactive: false,
+    className: 'neon-line c-tower',
+  });
+}
+
+function hideHoverRange() {
+  hoverRange?.remove();
+  hoverRange = null;
+}
+
+function showHoverRange(i: number) {
+  hideHoverRange();
+  if (!round || (selection?.kind === 'tower' && selection.i === i)) return; // already drawn
+  hoverRange = rangeCircle(round.towers[i]).addTo(rangeLayer);
+}
+
+function buildTowerLayer(towers: Tower[]) {
+  towerLayer.clearLayers();
+  rangeLayer.clearLayers();
+  hoverRange = selectedRange = null;
+  towerMarkers = towers.map((t, i) =>
+    L.marker(ll(t.pos), {
+      icon: L.divIcon({ className: 'tower-marker', html: `<div class="tower-icon">${towerIconSvg(24)}</div>`, iconSize: [24, 24] }),
+      zIndexOffset: 500, // over people, under vehicles
+    })
+      .bindTooltip(t.id, { className: 'neon-tip', direction: 'top', offset: [0, -12] })
+      .on('mouseover', () => showHoverRange(i))
+      .on('mouseout', hideHoverRange)
+      .on('click', () => select({ kind: 'tower', i }))
+      .addTo(towerLayer),
+  );
+}
+
+/** Pedestrians whose phone is on tower `ti` right now (nearest tower), sorted by ID. */
+function connectedTo(ti: number): number[] {
+  if (!round) return [];
+  const { pedestrians, towers } = round;
+  return pedestrians
+    .map((_, i) => i)
+    .filter((i) => nearestTower(towers, positionAt(pedestrians[i], time)) === ti)
+    .sort((a, b) => pedestrians[a].id.localeCompare(pedestrians[b].id));
+}
+
+// ---------- Pedestrians ----------
+// Everyone is on the map; only their data (name, number, profile) is locked.
+function buildPedestrianLayer(people: Pedestrian[]) {
+  pedLayer.clearLayers();
+  pedMarkers = people.map((p, i) =>
+    L.marker(ll(positionAt(p, time)), {
+      icon: L.divIcon({ className: 'ped', html: '<span class="ped-dot"></span>', iconSize: [14, 14] }),
+      riseOnHover: true,
+    })
+      .bindTooltip(p.id, { className: 'neon-tip ped-tip', direction: 'top', offset: [0, -6] })
+      .on('click', () => select({ kind: 'person', i }))
+      .addTo(pedLayer),
+  );
+}
+
+/** Marker highlight classes follow the state; markers that are off the map have no element. */
+function syncMarkerClasses() {
+  if (!round) return;
+  const { pedestrians, target } = round;
+  pedMarkers.forEach((m, i) => {
+    const el = m.getElement();
+    if (!el) return;
+    const p = pedestrians[i];
+    el.classList.toggle('selected', (selection?.kind === 'person' && selection.i === i) || p === arrested);
+    el.classList.toggle('target', arrested !== null && p === target);
+  });
+  towerMarkers.forEach((m, i) => m.getElement()?.classList.toggle('selected', selection?.kind === 'tower' && selection.i === i));
+}
+
+// ---------- Inspector ----------
+const inspectorEl = $('inspector');
+/** What the inspector last drew, so live updates only redraw when the content changes. */
+let inspectorKey = '';
+
+function renderInspector(force = false) {
+  if (!force && holdingIn(inspectorEl)) return; // don't swap a button out from under a hold
+  if (!round || !selection) {
+    inspectorEl.innerHTML = emptyHtml();
+    inspectorKey = '';
+    return;
+  }
+  if (selection.kind === 'person') {
+    const revealed = revealedPeds.has(selection.i);
+    const key = `p${selection.i}:${revealed}:${arrested !== null}`;
+    if (!force && key === inspectorKey) return;
+    inspectorEl.innerHTML = personHtml(round.pedestrians[selection.i], revealed, arrested === null, ARREST_HOLD_MS);
+    inspectorKey = key;
+    return;
+  }
+  // Tower: who is connected changes as people walk, so this redraws during playback
+  const connected = connectedTo(selection.i);
+  const allRevealed = connected.every((i) => revealedPeds.has(i));
+  const canAfford = energy >= REVEAL_DATA_COST;
+  const key = `t${selection.i}:${connected.join(',')}:${allRevealed}:${canAfford}`;
+  if (!force && key === inspectorKey) return;
+  const sameTower = inspectorKey.startsWith(`t${selection.i}:`);
+  const scroll = inspectorEl.querySelector('.conn-list')?.scrollTop ?? 0;
+  inspectorEl.innerHTML = towerHtml(round.towers[selection.i], {
+    connected: connected.map((i) => ({ i, p: round!.pedestrians[i], revealed: revealedPeds.has(i) })),
+    revealCost: REVEAL_DATA_COST,
+    holdMs: INTEL_HOLD_MS,
+    canAfford,
+  });
+  if (sameTower) inspectorEl.querySelector('.conn-list')!.scrollTop = scroll;
+  inspectorKey = key;
+}
+
+function select(sel: Selection) {
+  selection = sel;
+  selectedRange?.remove();
+  selectedRange = null;
+  if (round && sel?.kind === 'tower') {
+    hideHoverRange();
+    selectedRange = rangeCircle(round.towers[sel.i]).addTo(rangeLayer);
+  }
+  syncMarkerClasses();
+  renderInspector(true);
+}
+
+inspectorEl.addEventListener('click', (e) => {
+  const el = (e.target as HTMLElement).closest<HTMLElement>('[data-action], [data-ped]');
+  if (!el || !round) return;
+  if (el.dataset.ped !== undefined) select({ kind: 'person', i: Number(el.dataset.ped) });
+});
+// Hold-to-confirm actions (see hold.ts): revealing user data costs energy, arresting is free
+inspectorEl.addEventListener('hold', (e) => {
+  const el = e.target as HTMLElement;
+  if (!round) return;
+  if (el.dataset.action === 'reveal-data' && selection?.kind === 'tower') {
+    const hidden = connectedTo(selection.i).filter((i) => !revealedPeds.has(i));
+    if (hidden.length === 0 || !spend(REVEAL_DATA_COST)) return;
+    hidden.forEach((i) => revealedPeds.add(i));
+    renderInspector(true);
+  } else if (el.dataset.action === 'arrest' && selection?.kind === 'person') {
+    arrest(round.pedestrians[selection.i]);
+  }
+});
 
 map.on('click', () => select(null));
 
@@ -202,7 +408,9 @@ map.on('click', () => select(null));
 $('legend').innerHTML =
   (Object.keys(KINDS) as SourceKind[])
     .map((k) => `<div class="legend-item" style="color:${KINDS[k].color}">${iconSvg(k, 18)}<span>${KINDS[k].label}</span></div>`)
-    .join('') + '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>';
+    .join('') +
+  `<div class="legend-item" style="color:${TOWER_COLOR}">${towerIconSvg(18)}<span>Cell tower</span></div>` +
+  '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>';
 
 // Field guide: Doppler toy and reference sirens, for learning to read the spectrogram
 new FieldGuide($('guide'));
@@ -222,6 +430,20 @@ function setLoading(status: string | null) {
   loadingEl.classList.toggle('hidden', status === null);
   if (status !== null) loadingStatus.textContent = status;
 }
+
+// ---------- Mission result overlay ----------
+/** Shows the end-of-round banner (true = completed, false = failed), or hides it with null. */
+function showMission(success: boolean | null) {
+  $('mission').classList.toggle('hidden', success === null);
+  if (success === null) return;
+  const title = $('mission-title');
+  title.textContent = success ? 'Mission completed' : 'Mission failed';
+  title.classList.toggle('ok', success);
+  title.classList.toggle('fail', !success);
+}
+
+$('btn-mission-hide').addEventListener('click', () => showMission(null));
+$('btn-mission-retry').addEventListener('click', () => void newRound());
 
 /** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
 const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
@@ -257,10 +479,18 @@ async function newRound() {
     }
 
     round = next;
-    revealed = false;
+    arrested = null;
+    revealedPeds.clear();
+    unlockedKinds.clear();
+    energy = START_ENERGY;
+    renderEnergy();
+    showMission(null);
+    $('target').innerHTML = targetHtml(round.target, round.clues);
     tags = [];
     revealLayer.clearLayers();
+    time = 0;
     buildSourceLayers(round.sources);
+    buildTowerLayer(round.towers);
     buildPedestrianLayer(round.pedestrians);
     select(null);
     $('result').textContent = '';
@@ -275,13 +505,17 @@ async function newRound() {
   }
 }
 
-function reveal() {
-  if (!round || !selected) return;
-  revealed = true;
-  const { target } = round;
-  const correct = selected === target;
+function arrest(suspect: Pedestrian) {
+  if (!round || arrested) return;
+  arrested = suspect;
+  const { target, pedestrians } = round;
+  const correct = suspect === target;
 
-  markerOf(target)?.getElement()?.classList.add('target');
+  // The case is closed: both files are opened
+  revealedPeds.add(pedestrians.indexOf(target));
+  revealedPeds.add(pedestrians.indexOf(suspect));
+  syncMarkerClasses();
+  renderInspector(true);
   // Where the target actually walked during the clip
   if (isMoving(target)) {
     L.polyline(routeDuringClip(target).map(ll), {
@@ -294,12 +528,12 @@ function reveal() {
   }
   if (!correct) hitLine.addTo(revealLayer);
 
-  const d = dist(positionAt(selected, time), positionAt(target, time));
+  const d = dist(positionAt(suspect, time), positionAt(target, time));
   $('result').innerHTML = correct
-    ? `<b class="win">TARGET IDENTIFIED</b><br>${fullName(target)} it is.`
-    : `<b class="hot">WRONG PERSON</b><br>The target was ${fullName(target)}, ${Math.round(d)} m from your suspect at ${time.toFixed(0)}s.`;
-  $<HTMLButtonElement>('btn-submit').disabled = true;
+    ? `<b class="win">TARGET ARRESTED</b><br>${fullName(target)} (${target.id}) it is.`
+    : `<b class="hot">WRONG PERSON</b><br>You arrested ${fullName(suspect)}. The target was ${fullName(target)} (${target.id}), ${Math.round(d)} m away at ${time.toFixed(0)}s.`;
   setTime(time);
+  showMission(correct);
 }
 
 // ---------- Time ----------
@@ -325,9 +559,11 @@ function setTime(t: number) {
 
   round.pedestrians.forEach((p, i) => pedMarkers[i].setLatLng(ll(positionAt(p, t))));
 
-  if (revealed && selected && selected !== round.target) {
-    hitLine.setLatLngs([ll(positionAt(selected, t)), ll(positionAt(round.target, t))]);
+  if (arrested && arrested !== round.target) {
+    hitLine.setLatLngs([ll(positionAt(arrested, t)), ll(positionAt(round.target, t))]);
   }
+  // A selected tower's connected list follows people as they walk between towers
+  if (selection?.kind === 'tower') renderInspector();
 }
 
 let lastFrame = 0;
@@ -385,7 +621,6 @@ $<HTMLInputElement>('toggle-paths').addEventListener('change', (e) => {
   else zones.remove();
 });
 
-$('btn-submit').addEventListener('click', reveal);
 $('btn-new').addEventListener('click', () => void newRound());
 $('btn-zoom-in').addEventListener('click', () => spectro.zoomIn());
 $('btn-zoom-out').addEventListener('click', () => spectro.zoomOut());

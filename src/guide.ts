@@ -66,7 +66,7 @@ export class FieldGuide {
     root.innerHTML = `
       <div class="guide-head">
         <div class="title">FIELD GUIDE</div>
-        <button class="guide-toggle" title="Hide or show">–</button>
+        <button class="guide-toggle" title="Hide or show">+</button>
       </div>
       <div class="guide-body">
         <div class="guide-label">Doppler pass-by</div>
@@ -95,6 +95,7 @@ export class FieldGuide {
     this.readout = q('.guide-readout');
 
     const toggle = q<HTMLButtonElement>('.guide-toggle');
+    root.classList.add('collapsed'); // starts closed
     toggle.addEventListener('click', () => {
       const collapsed = root.classList.toggle('collapsed');
       toggle.textContent = collapsed ? '+' : '–';

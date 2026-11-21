@@ -8,12 +8,24 @@
 import { HALF_SIZE_M, type Vec } from './geo';
 import { cellEdges, spotInCell, type Edge, type Graph } from './graph';
 import { randomProfile, type Profile } from './people';
-import { pick, range, type Rng } from './rng';
+import { pick, range, shuffle, type Rng } from './rng';
 import { CLIP_SECONDS, makeTrack, type Track } from './sources';
 
 export interface Pedestrian extends Track {
-  id: string;
+  id: string; // random subscriber ID, e.g. P-40217
+  phone: string; // 6 random digits, not a real number format
   profile: Profile;
+}
+
+/** `digits` random digits, never one already in `used`. */
+function uniqueDigits(rnd: Rng, digits: number, used: Set<string>): string {
+  for (;;) {
+    const s = String(Math.floor(rnd() * 10 ** digits)).padStart(digits, '0');
+    if (!used.has(s)) {
+      used.add(s);
+      return s;
+    }
+  }
 }
 
 /** Walk-graph edge tags: 0 major, 1 secondary, 2 minor road, 3 pedestrian street. */
@@ -26,8 +38,8 @@ const U_TURN_CHANCE = 0.02; // per graph node passed
 const CROSS_CHANCE = 0.04; // per graph node passed: switch to the other sidewalk
 /** The play box is split into this many cells per side for spawning (100 m cells). */
 const SPAWN_GRID = 20;
-/** Chance that a cell gets a person. 400 cells x 0.65 = ~260 people. */
-const SPAWN_CHANCE = 0.65;
+/** People per round. */
+const PEDESTRIAN_COUNT = 500;
 
 function offsetSegment(a: Vec, b: Vec, len: number, off: number): [Vec, Vec] {
   // Right-hand normal of a->b (x east, y north)
@@ -82,18 +94,26 @@ function sidewalkWalk(g: Graph, rnd: Rng, from: number, first: Edge, f: number, 
 }
 
 /**
- * Spreads people evenly: the play box is split into a SPAWN_GRID x SPAWN_GRID
- * grid, and each cell gets one person with SPAWN_CHANCE, at a random point on
- * a street inside it. Cells with no streets stay empty.
+ * Spreads PEDESTRIAN_COUNT people evenly: the play box is split into a
+ * SPAWN_GRID x SPAWN_GRID grid, and people are dealt out to the cells that
+ * have streets, in a shuffled order, round after round, so every street cell
+ * gets one or two. Each starts at a random point on a street inside its cell.
  */
 export function generatePedestrians(walk: Graph, rnd: Rng): Pedestrian[] {
   const cells = cellEdges(walk, SPAWN_GRID, HALF_SIZE_M);
   const people: Pedestrian[] = [];
+  const usedIds = new Set<string>();
+  const usedPhones = new Set<string>();
+  const order = shuffle(
+    rnd,
+    cells.map((refs, c) => (refs.length > 0 ? c : -1)).filter((c) => c >= 0),
+  );
+  if (order.length === 0) return people;
 
-  cells.forEach((refs, c) => {
-    if (rnd() >= SPAWN_CHANCE) return;
-    const spot = spotInCell(walk, rnd, refs, c, SPAWN_GRID, HALF_SIZE_M);
-    if (!spot) return;
+  for (let k = 0; people.length < PEDESTRIAN_COUNT && k < PEDESTRIAN_COUNT * 3; k++) {
+    const c = order[k % order.length];
+    const spot = spotInCell(walk, rnd, cells[c], c, SPAWN_GRID, HALF_SIZE_M);
+    if (!spot) continue;
     const { ref, f } = spot;
     const profile = randomProfile(rnd);
     let track: Track;
@@ -107,7 +127,8 @@ export function generatePedestrians(walk: Graph, rnd: Rng): Pedestrian[] {
       const path = sidewalkWalk(walk, rnd, ref.from, ref.edge, f, speed * CLIP_SECONDS + 10);
       track = makeTrack(path, path.length > 1 ? speed : 0);
     }
-    people.push({ ...track, id: `p${people.length + 1}`, profile });
-  });
+    const id = `P-${uniqueDigits(rnd, 5, usedIds)}`;
+    people.push({ ...track, id, phone: uniqueDigits(rnd, 6, usedPhones), profile });
+  }
   return people;
 }

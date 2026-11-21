@@ -90,7 +90,7 @@ const fromLatLngs = (pts: [number, number][]) => pts.map(([lat, lng]) => toLocal
 
 /**
  * Hand-placed sources that are the same every round. Road vehicles, trams,
- * construction sites and the airplane are placed per round in scenario.ts.
+ * construction sites and the airplanes are placed per round in scenario.ts.
  */
 /** Length of public/audio/church-bell.mp3, which rings once from the bell's start time. */
 const BELL_RING_S = 41;

@@ -8,28 +8,50 @@
   </head>
   <body>
     <!-- Shown while a round is being simulated; the map stays faded in the back -->
-    <div id="loading">
+    <div id="loading" class="screen-overlay">
       <div class="loading-title">LOADING</div>
       <div id="loading-status" class="loading-status">Loading map data</div>
+    </div>
+    <!-- Shown after an arrest -->
+    <div id="mission" class="screen-overlay hidden">
+      <div id="mission-title" class="mission-title"></div>
+      <div class="row">
+        <button id="btn-mission-hide">Hide</button>
+        <button id="btn-mission-retry">Try again</button>
+      </div>
     </div>
     <div id="app">
       <!-- Top 2/3: map -->
       <section id="map-panel">
         <div id="map"></div>
 
-        <div class="map-overlay top-right panel">
-          <div class="title">FIND ME <span class="badge">PROTOTYPE</span></div>
-          <div class="muted small">One person in this zone recorded the sound below. Find them.</div>
-          <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>
-          <div id="selected" class="profile"></div>
-          <div class="row">
-            <button id="btn-submit" disabled>Accuse</button>
-            <button id="btn-new">New round</button>
+        <div class="map-overlay top-right right-col">
+          <div class="panel energy-panel">
+            <div class="energy-row"><span class="section-label">Energy</span><b id="energy-value">100</b></div>
+            <div class="energy-bar"><div id="energy-fill"></div></div>
           </div>
-          <div id="result"></div>
+          <div class="panel" id="side">
+            <div class="title">FIND ME <span class="badge">PROTOTYPE</span></div>
+            <div class="muted small">One of these people recorded the sound below. Everyone's data is locked, but every phone talks to its nearest cell tower. Find the target and arrest them by ID.</div>
+            <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>
+            <div class="section-label">Inspector</div>
+            <div id="inspector" class="inspector"></div>
+            <div id="result"></div>
+            <div class="row">
+              <button id="btn-new">New round</button>
+            </div>
+          </div>
         </div>
 
-        <div class="map-overlay top-left panel" id="guide"></div>
+        <div class="map-overlay top-left left-col">
+          <div class="panel" id="target"></div>
+          <div class="panel" id="intel">
+            <div class="section-label">Data access</div>
+            <div class="muted small">Hold a button for 1 s to buy the data.</div>
+            <div id="intel-buttons"></div>
+          </div>
+          <div class="panel" id="guide"></div>
+        </div>
         <div class="map-overlay bottom-right panel" id="legend"></div>
       </section>
 

@@ -36,12 +36,82 @@ html, body {
 .leaflet-container { background: var(--void); font-family: var(--mono); }
 
 .map-overlay { position: absolute; z-index: 1000; }
-.top-right { top: 12px; right: 12px; width: 260px; }
+.top-right { top: 12px; right: 12px; }
 .bottom-right { bottom: 26px; right: 12px; }
-.top-left { top: 12px; left: 12px; width: 360px; }
+.top-left { top: 12px; left: 12px; }
 
-/* ---------- Field guide (top left) ---------- */
-#guide { max-height: calc(100% - 24px); overflow-y: auto; }
+/* Side columns: panels stacked, the column never runs past the map */
+.left-col,
+.right-col { display: flex; flex-direction: column; gap: 10px; }
+.left-col { align-items: flex-start; max-height: calc(100% - 24px); }
+.right-col { width: 320px; max-height: calc(100% - 24px - 200px); } /* clears the legend */
+.left-col > .panel,
+.right-col > .panel { flex: 0 1 auto; min-height: 0; }
+
+/* ---------- Target profile (left, top) ---------- */
+#target { width: 260px; flex: none; border-color: rgba(255, 59, 92, 0.55); box-shadow: 0 0 18px rgba(255, 59, 92, 0.2), inset 0 0 12px rgba(255, 59, 92, 0.1); }
+#target:empty { display: none; }
+#target .title { color: var(--red); text-shadow: 0 0 8px var(--red); font-size: 13px; }
+#target .insp-fields { font-size: 12px; }
+#target .insp-fields dd .muted { text-shadow: none; }
+
+/* ---------- Data access (left) ---------- */
+#intel { width: 260px; flex: none; }
+#intel-buttons { display: flex; flex-direction: column; gap: 6px; }
+.intel-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 7px 10px;
+}
+.intel-btn .cost {
+  color: var(--cyan);
+  text-shadow: 0 0 6px var(--cyan);
+  font-family: var(--display);
+  font-size: 11px;
+}
+.intel-btn .cost::before { content: '⚡'; margin-right: 2px; }
+.intel-btn.owned { opacity: 1; border-color: rgba(69, 255, 156, 0.5); }
+.intel-btn.owned .cost { color: var(--green); text-shadow: 0 0 6px var(--green); font-family: var(--mono); }
+.intel-btn.owned .cost::before { content: none; }
+
+/* Hold-to-confirm (hold.ts): the fill grows with --hold from 0 to 1 */
+button[data-hold] { position: relative; isolation: isolate; user-select: none; touch-action: none; }
+button[data-hold]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(46, 230, 255, 0.4);
+  box-shadow: 0 0 12px rgba(46, 230, 255, 0.6);
+  transform-origin: left;
+  transform: scaleX(var(--hold, 0));
+  pointer-events: none;
+}
+.btn-arrest[data-hold]::after { background: rgba(255, 59, 92, 0.45); box-shadow: 0 0 12px rgba(255, 59, 92, 0.6); }
+
+/* ---------- Energy (top right) ---------- */
+.energy-panel { flex: none; gap: 5px; }
+.energy-row { display: flex; justify-content: space-between; align-items: baseline; }
+#energy-value {
+  font-family: var(--display);
+  font-size: 18px;
+  color: #fff;
+  text-shadow: 0 0 8px var(--cyan);
+}
+.energy-bar { height: 6px; border: 1px solid var(--line); background: rgba(2, 3, 15, 0.8); }
+#energy-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+  transition: width 0.3s;
+}
+
+/* ---------- Field guide (left, under data access) ---------- */
+#guide { width: 360px; overflow-y: auto; }
 #guide.collapsed { width: auto; }
 #guide.collapsed .guide-body { display: none; }
 .guide-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -302,21 +372,107 @@ label { text-transform: uppercase; font-size: 12px; }
   box-shadow: 0 0 4px #fff;
 }
 
-/* Suspect profile in the side panel */
-.profile {
+/* ---------- Cell towers ---------- */
+.tower-marker { background: none; border: none; cursor: pointer; }
+.tower-icon {
+  width: 24px;
+  height: 24px;
+  filter: drop-shadow(0 0 3px currentColor);
+  color: #d16bff;
+  opacity: 0.85;
+  transition: transform 0.1s, opacity 0.1s;
+}
+.tower-icon svg { display: block; }
+.tower-marker:hover .tower-icon,
+.tower-marker.selected .tower-icon { opacity: 1; transform: scale(1.25); filter: drop-shadow(0 0 5px currentColor) drop-shadow(0 0 2px currentColor); }
+
+/* ---------- Inspector (right panel) ---------- */
+#side { overflow-y: auto; }
+.section-label,
+.inspector .label { font-size: 10px; letter-spacing: 0.12em; color: var(--cyan); text-transform: uppercase; }
+.section-label { border-top: 1px solid rgba(80, 130, 255, 0.25); padding-top: 6px; }
+.inspector {
   border: 1px solid rgba(80, 130, 255, 0.25);
-  padding: 6px 8px;
+  padding: 8px;
   min-height: 46px;
   font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
 }
-.profile .label { font-size: 10px; letter-spacing: 0.12em; color: var(--cyan); text-transform: uppercase; }
-.profile .ped-name { font-size: 12px; }
+.insp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.insp-head svg { filter: drop-shadow(0 0 3px #d16bff); }
+.insp-fields { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+.insp-fields dt { color: var(--muted); text-transform: uppercase; font-size: 11px; }
+.insp-fields dd { margin: 0; color: #fff; text-shadow: 0 0 6px rgba(46, 230, 255, 0.6); }
+
+.conn-list { max-height: 180px; overflow-y: auto; border: 1px solid rgba(80, 130, 255, 0.2); }
+.conn-row {
+  display: grid;
+  grid-template-columns: 62px 1fr 58px;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.conn-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button.conn-row:nth-child(odd) { background: rgba(10, 20, 70, 0.35); }
+button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); }
+.conn-header { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; position: sticky; top: 0; background: #050a26; }
+.conn-empty { padding: 4px 6px; }
+
+.person-card { display: grid; grid-template-columns: 72px 1fr; gap: 10px; align-items: start; }
+.photo {
+  width: 72px;
+  height: 86px;
+  border: 1px solid var(--line);
+  background: repeating-linear-gradient(0deg, rgba(46, 230, 255, 0.05) 0 1px, transparent 1px 3px), rgba(2, 3, 15, 0.8);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+}
+.silhouette {
+  width: 70px;
+  height: 70px;
+  fill: rgba(46, 230, 255, 0.22);
+  stroke: var(--cyan);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px var(--cyan));
+}
+.redacted { color: rgba(111, 134, 201, 0.45); letter-spacing: -0.05em; }
+.photo.unknown {
+  align-items: center;
+  font-family: var(--display);
+  font-size: 34px;
+  color: var(--muted);
+  text-shadow: 0 0 8px rgba(90, 140, 255, 0.6);
+}
+.locked-note { margin-top: 6px; }
+.btn-arrest { border-color: var(--red); color: var(--red); text-shadow: 0 0 6px var(--red); }
+.btn-arrest:hover:not(:disabled) { border-color: var(--red); color: #fff; box-shadow: 0 0 10px rgba(255, 59, 92, 0.6); }
 .win { color: var(--green); text-shadow: 0 0 6px var(--green); letter-spacing: 0.1em; }
 #result:empty { display: none; }
 
 
-/* ---------- Loading overlay ---------- */
-#loading {
+/* ---------- Full-screen overlays: loading, mission result ---------- */
+.screen-overlay {
   position: fixed;
   inset: 0;
   z-index: 5000;
@@ -328,10 +484,24 @@ label { text-transform: uppercase; font-size: 12px; }
   background: rgba(2, 3, 15, 0.72); /* the map stays visible, faded, behind it */
   transition: opacity 0.25s;
 }
-#loading.hidden {
+.screen-overlay.hidden {
   opacity: 0;
   pointer-events: none;
 }
+.mission-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(32px, 6vw, 88px);
+  letter-spacing: 0.2em;
+  padding-left: 0.2em; /* balance the trailing letter spacing */
+  text-align: center;
+  text-transform: uppercase;
+  animation: loading-pulse 1.6s ease-in-out infinite;
+}
+.mission-title.ok { color: var(--cyan); text-shadow: 0 0 12px var(--cyan), 0 0 36px var(--cyan), 0 0 80px rgba(46, 230, 255, 0.6); }
+.mission-title.fail { color: var(--red); text-shadow: 0 0 12px var(--red), 0 0 36px var(--red), 0 0 80px rgba(255, 59, 92, 0.6); }
+#mission .row { gap: 14px; }
+#mission button { font-size: 15px; padding: 8px 22px; }
 .loading-title {
   font-family: var(--display);
   font-weight: 700;

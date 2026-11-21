@@ -6,6 +6,7 @@ import type { OsmData } from './osm';
 import { mulberry32, pick, randInt, range, shuffle, type Rng } from './rng';
 import { PEDESTRIAN_STREET_TAG, generatePedestrians, type Pedestrian } from './pedestrians';
 import { AIRPLANE_RANGE_M } from './sim';
+import { generateTowers, type Tower } from './towers';
 import { CLIP_SECONDS, FIXED_SOURCES, PREHEAT_SECONDS, KINDS, makeSource, positionAt, type SoundSource, type SourceKind } from './sources';
 
 export interface World {
@@ -19,7 +20,14 @@ export interface Round {
   sources: SoundSource[];
   pedestrians: Pedestrian[];
   target: Pedestrian; // whose phone recorded the spectrogram
+  towers: Tower[];
+  /** Which parts of the target's profile the player is told (two of the three). */
+  clues: TargetClue[];
 }
+
+export type TargetClue = 'sex' | 'age' | 'occupation';
+const CLUES: TargetClue[] = ['sex', 'age', 'occupation'];
+const CLUES_SHOWN = 2;
 
 // Emergency vehicles prefer arterials: minor streets cost more per metre.
 const ROAD_COST_BY_RANK = [1, 1.15, 1.6];
@@ -237,18 +245,34 @@ const AIRPLANE_TIME_MARGIN_S = 60;
 /** Its line runs this far either side of the pass point: past its hearing range, so it fades in and out. */
 const AIRPLANE_HALF_PATH_M = AIRPLANE_RANGE_M + 500;
 
+/** Airliners per round. */
+const AIRPLANES: [number, number] = [2, 3];
+/** Pass times are at least this far apart, so each one is its own clue. */
+const AIRPLANE_MIN_GAP_S = 100;
+
 /**
- * One airliner per round: a straight line through a random point of the play
- * box, at a random heading, passing that point at a random time between the
- * first and last minute of the clip.
+ * Pass times for `n` airliners, uniformly random between the first and last
+ * minute of the clip but at least AIRPLANE_MIN_GAP_S apart: draw n points in
+ * the window shrunk by the gaps, sort them, then push each one out by its gaps.
  */
-function placeAirplane(rnd: Rng): SoundSource {
-  const passTime = range(rnd, [AIRPLANE_TIME_MARGIN_S, CLIP_SECONDS - AIRPLANE_TIME_MARGIN_S]);
+function airplanePassTimes(rnd: Rng, n: number): number[] {
+  const lo = AIRPLANE_TIME_MARGIN_S;
+  const slack = Math.max(0, CLIP_SECONDS - 2 * AIRPLANE_TIME_MARGIN_S - (n - 1) * AIRPLANE_MIN_GAP_S);
+  return Array.from({ length: n }, () => rnd() * slack)
+    .sort((a, b) => a - b)
+    .map((t, k) => lo + t + k * AIRPLANE_MIN_GAP_S);
+}
+
+/**
+ * An airliner on a straight line through a random point of the play box, at a
+ * random heading, passing that point at `passTime`.
+ */
+function placeAirplane(rnd: Rng, passTime: number, n: number): SoundSource {
   const p = { x: range(rnd, [-HALF_SIZE_M, HALF_SIZE_M]), y: range(rnd, [-HALF_SIZE_M, HALF_SIZE_M]) };
   const heading = rnd() * 2 * Math.PI;
   const dx = Math.sin(heading) * AIRPLANE_HALF_PATH_M;
   const dy = Math.cos(heading) * AIRPLANE_HALF_PATH_M;
-  return makeSource('air1', 'airplane', 'Airliner', [{ x: p.x - dx, y: p.y - dy }, { x: p.x + dx, y: p.y + dy }], {
+  return makeSource(`air${n}`, 'airplane', `Airliner ${n}`, [{ x: p.x - dx, y: p.y - dy }, { x: p.x + dx, y: p.y + dy }], {
     speed: AIRPLANE_SPEED_MS,
     start: passTime - AIRPLANE_HALF_PATH_M / AIRPLANE_SPEED_MS, // reaches p at passTime
     altitude: AIRPLANE_ALTITUDE_M,
@@ -258,11 +282,18 @@ function placeAirplane(rnd: Rng): SoundSource {
 
 export function generateRound(world: World, seed: number): Round {
   const rnd = mulberry32(seed);
-  const sources = [...FIXED_SOURCES, placeAirplane(rnd), ...placeConstructionSites(world, rnd)];
+  const airplanes = airplanePassTimes(rnd, randInt(rnd, AIRPLANES)).map((t, k) => placeAirplane(rnd, t, k + 1));
+  const sources = [...FIXED_SOURCES, ...airplanes, ...placeConstructionSites(world, rnd)];
   for (const spec of VEHICLES) sources.push(...spawnFleet(world, rnd, spec));
   const pedestrians = generatePedestrians(world.walk, rnd);
   // Pick the target among people who pass near a siren, so the clip has a clue to place them.
   const sirens = sources.filter((s) => SIREN_KINDS.has(s.kind));
   const candidates = pedestrians.filter((p) => nearSiren(p, sirens, TARGET_SIREN_DISTANCE_M));
-  return { seed, sources, pedestrians, target: pick(rnd, candidates.length > 0 ? candidates : pedestrians) };
+  const target = pick(rnd, candidates.length > 0 ? candidates : pedestrians);
+  // Own streams, so these details don't shift the rest of the round for a given seed
+  const towers = generateTowers(mulberry32(seed ^ 0x5bd1e995));
+  const clues = shuffle(mulberry32(seed ^ 0x27d4eb2f), CLUES)
+    .slice(0, CLUES_SHOWN)
+    .sort((a, b) => CLUES.indexOf(a) - CLUES.indexOf(b));
+  return { seed, sources, pedestrians, target, towers, clues };
 }
