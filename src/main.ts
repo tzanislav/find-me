@@ -17,10 +17,14 @@ import {
   type Track,
 } from './sources';
 import { simulate } from './sim';
-import { renderListenerAudio } from './audio/render';
+import { renderListenerAudio, type AudioAssets } from './audio/render';
+import { loadSamples } from './audio/samples';
+import { loadNoiseMap } from './noisemap';
 import { ClipPlayer } from './audio/player';
+import { MusicPlayer } from './audio/music';
 import { SpectrogramView, type Tag } from './spectrogram';
 import { addBasemap } from './basemap';
+import { FieldGuide } from './guide';
 import { loadOsm } from './osm';
 import { buildWorld, generateRound, type Round, type World } from './scenario';
 import type { Pedestrian } from './pedestrians';
@@ -29,6 +33,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 // ---------- State ----------
 let world: World | null = null;
+let audioAssets: AudioAssets | null = null;
 let round: Round | null = null;
 let time = 0;
 let playing = false;
@@ -194,6 +199,9 @@ $('legend').innerHTML =
     .map((k) => `<div class="legend-item" style="color:${KINDS[k].color}">${iconSvg(k, 18)}<span>${KINDS[k].label}</span></div>`)
     .join('') + '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>';
 
+// Field guide: Doppler toy and reference sirens, for learning to read the spectrogram
+new FieldGuide($('guide'));
+
 // ---------- Spectrogram ----------
 const spectro = new SpectrogramView($<HTMLCanvasElement>('spectro'), (t) => {
   setPlaying(false);
@@ -214,9 +222,11 @@ function newRound() {
   $('result').textContent = '';
   spectro.setTags(tags);
   spectro.setData(simulate(round.sources, round.target, seed));
-  const t0 = performance.now();
-  player.setSamples(renderListenerAudio(round.sources, round.target, seed));
-  console.info(`Audio rendered in ${Math.round(performance.now() - t0)} ms`);
+  if (audioAssets) {
+    const t0 = performance.now();
+    player.setSamples(renderListenerAudio(round.sources, round.target, seed, audioAssets));
+    console.info(`Audio rendered in ${Math.round(performance.now() - t0)} ms`);
+  }
   setPlaying(false);
   setTime(0);
   console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
@@ -280,6 +290,8 @@ function setTime(t: number) {
 let lastFrame = 0;
 // What the target heard, played in sync with the timeline
 const player = new ClipPlayer();
+// Background music, loops from the first click or key press
+const music = new MusicPlayer();
 
 function setPlaying(p: boolean) {
   playing = p;
@@ -318,6 +330,7 @@ function addTag() {
 
 $('btn-play').addEventListener('click', () => setPlaying(!playing));
 $<HTMLInputElement>('toggle-sound').addEventListener('change', (e) => player.setMuted(!(e.target as HTMLInputElement).checked));
+$<HTMLInputElement>('toggle-music').addEventListener('change', (e) => music.setMuted(!(e.target as HTMLInputElement).checked));
 $('btn-tag').addEventListener('click', addTag);
 $('btn-clear-tags').addEventListener('click', () => {
   tags = [];
@@ -345,9 +358,19 @@ window.addEventListener('keydown', (e) => {
 // ---------- Boot ----------
 async function boot() {
   $('result').textContent = 'Loading map data...';
+  const noiseMap = loadNoiseMap().catch((err) => {
+    console.error('Noise map failed to load, traffic bed uses a flat level', err);
+    return null;
+  });
+  const samples = loadSamples().catch((err) => {
+    console.error('Sound samples failed to load, the clip will be silent', err);
+    return null;
+  });
   const osm = await loadOsm();
   addBasemap(map, 'basemap', osm).catch((err) => console.error('Basemap failed to render', err));
   world = buildWorld(osm);
+  const bank = await samples;
+  if (bank) audioAssets = { samples: bank, noiseMap: await noiseMap };
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,
   );

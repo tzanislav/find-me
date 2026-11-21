@@ -18,7 +18,20 @@ const AIR_ABSORPTION_DB_PER_KHZ_KM = 4; // crude high-frequency loss with distan
 
 /** How far a pedestrian can hear. Sources beyond this are silent. */
 export const HEARING_RANGE_M = 300;
-const RANGE_FADE_M = 50; // fade out over the last stretch so sources don't pop in and out
+/** The plane flies at 700 m, so it is exempt from the normal range. */
+const AIRPLANE_RANGE_M = 3000;
+/** Fade out over the last stretch of the range so sources don't pop in and out. */
+const RANGE_FADE_FRACTION = 1 / 6;
+
+/**
+ * Doppler shift is this many times stronger than real, so pass-bys are easy to
+ * hear and see. 1 = realistic.
+ */
+export const DOPPLER_EXAGGERATION = 2;
+
+export function hearingRange(src: SoundSource): number {
+  return src.kind === 'airplane' ? AIRPLANE_RANGE_M : HEARING_RANGE_M;
+}
 
 /**
  * Level change from distance alone. Geometric spreading of a point source
@@ -26,10 +39,10 @@ const RANGE_FADE_M = 50; // fade out over the last stretch so sources don't pop 
  * smooth fade to silence at the edge of the hearing range.
  * Returns null when the source is out of range.
  */
-export function distanceGainDb(d: number): number | null {
-  if (d >= HEARING_RANGE_M) return null;
+export function distanceGainDb(d: number, range = HEARING_RANGE_M): number | null {
+  if (d >= range) return null;
   const spreading = -20 * Math.log10(Math.max(d, 1));
-  const k = Math.min(1, (HEARING_RANGE_M - d) / RANGE_FADE_M);
+  const k = Math.min(1, (range - d) / (range * RANGE_FADE_FRACTION));
   const fade = k * k * (3 - 2 * k); // smoothstep, as a power factor
   return spreading + 10 * Math.log10(fade);
 }
@@ -53,8 +66,13 @@ function distance3d(src: SoundSource, p: Vec, listener: Vec): number {
 }
 
 /**
- * For listener time t, find when the sound we hear left the source,
- * how far it travelled, and the Doppler factor at that moment.
+ * For listener time t, find when the sound we hear left the source (te),
+ * how far it travelled (d), and the Doppler factor at that moment.
+ *
+ * `tau` is the source time to play back at t. Physically it would be te =
+ * t - d / c; using t - k * d / c instead multiplies the Doppler shift by k
+ * (DOPPLER_EXAGGERATION) while staying within a second of te. `doppler` is
+ * the matching (exaggerated) pitch factor, d tau / dt.
  */
 export function propagate(src: SoundSource, listener: Vec, t: number) {
   let te = t;
@@ -67,8 +85,10 @@ export function propagate(src: SoundSource, listener: Vec, t: number) {
   const dPlus = distance3d(src, positionAt(src, te + h), listener);
   const dMinus = distance3d(src, positionAt(src, te - h), listener);
   const radialVelocity = (dPlus - dMinus) / (2 * h); // > 0 means moving away
-  const doppler = SPEED_OF_SOUND / (SPEED_OF_SOUND + radialVelocity);
-  return { te, d, doppler };
+  const k = DOPPLER_EXAGGERATION;
+  const doppler = SPEED_OF_SOUND / (SPEED_OF_SOUND + k * radialVelocity);
+  const tau = te - ((k - 1) * d) / SPEED_OF_SOUND;
+  return { te, tau, d, doppler };
 }
 
 /** Placeholder spectral shapes per source type. `lt` is time since the source started. */
@@ -166,13 +186,13 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1): Spe
     for (let b = 0; b < BINS; b++) pow[base + b] *= 0.6 + 0.8 * rnd();
 
     for (const src of sources) {
-      const { te, d, doppler } = propagate(src, here, t);
+      const { te, tau, d, doppler } = propagate(src, here, t);
       if (!isActive(src, te)) continue;
-      const gain = distanceGainDb(d);
+      const gain = distanceGainDb(d, hearingRange(src));
       if (gain === null) continue;
       const received = src.levelDb + gain;
       const absorbPerKhz = AIR_ABSORPTION_DB_PER_KHZ_KM * (d / 1000);
-      signature(src.kind, te - src.start, doppler, received, makeEmit(absorbPerKhz), rnd);
+      signature(src.kind, tau - src.start, doppler, received, makeEmit(absorbPerKhz), rnd);
     }
   }
 

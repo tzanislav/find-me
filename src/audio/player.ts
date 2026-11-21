@@ -2,7 +2,7 @@
 // The AudioContext is created on the first play, since browsers only allow
 // audio to start from a user gesture.
 
-import { AUDIO_SAMPLE_RATE } from './render';
+import { AUDIO_SAMPLE_RATE } from './constants';
 
 export class ClipPlayer {
   private ctx: AudioContext | null = null;

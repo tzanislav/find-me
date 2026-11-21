@@ -52,7 +52,6 @@ const VEHICLES: VehicleSpec[] = [
   { kind: 'tram', network: 'tram', concurrent: [8, 10], speed: [6, 9], levelDb: 102, spawn: 'edge' },
 ];
 
-const PEDESTRIAN_COUNT = 200;
 const SPAWN_MARGIN = 1.15; // spawn inside the play box plus a little margin
 const MIN_TRIP_M = 900; // destinations closer than this are rejected
 const RESPAWN_DELAY_S: [number, number] = [0, 15]; // pause before a slot sends out its next vehicle
@@ -114,10 +113,30 @@ function spawnFleet(world: World, rnd: Rng, spec: VehicleSpec): SoundSource[] {
   return out;
 }
 
+/** The target must come at least this close to an ambulance or police car during the clip. */
+const TARGET_SIREN_DISTANCE_M = 200;
+const SIREN_KINDS = new Set<SourceKind>(['ambulance', 'police']);
+
+/** True if the person is within `maxDist` of an active siren vehicle at some moment of the clip. */
+function nearSiren(p: Pedestrian, sirens: SoundSource[], maxDist: number): boolean {
+  for (let t = 0; t <= CLIP_SECONDS; t += 1) {
+    const here = positionAt(p, t);
+    for (const s of sirens) {
+      if (t < s.start || t > s.end) continue;
+      const v = positionAt(s, t);
+      if (Math.hypot(v.x - here.x, v.y - here.y) <= maxDist) return true;
+    }
+  }
+  return false;
+}
+
 export function generateRound(world: World, seed: number): Round {
   const rnd = mulberry32(seed);
   const sources = [...FIXED_SOURCES];
   for (const spec of VEHICLES) sources.push(...spawnFleet(world, rnd, spec));
-  const pedestrians = generatePedestrians(world.walk, rnd, PEDESTRIAN_COUNT);
-  return { seed, sources, pedestrians, target: pick(rnd, pedestrians) };
+  const pedestrians = generatePedestrians(world.walk, rnd);
+  // Pick the target among people who pass near a siren, so the clip has a clue to place them.
+  const sirens = sources.filter((s) => SIREN_KINDS.has(s.kind));
+  const candidates = pedestrians.filter((p) => nearSiren(p, sirens, TARGET_SIREN_DISTANCE_M));
+  return { seed, sources, pedestrians, target: pick(rnd, candidates.length > 0 ? candidates : pedestrians) };
 }

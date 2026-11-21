@@ -1,7 +1,7 @@
 # Noise map alignment
 
 Real strategic noise map of central Sofia, aligned to the game map on 2026-11-20.
-Not used in the game yet. Kept for later, e.g. as ambient noise per location.
+Used by the audio render (`src/noisemap.ts`, `src/audio/render.ts`): the traffic bed under each clip follows the level at the listener, power-averaged over 25 m. The black and white image is read, mapping each grey level back to its band (0, 20, 32, 65, 88, 116, 159, 207, 255 = quietest to loudest; the two loudest bands are both white).
 
 ## Files
 
