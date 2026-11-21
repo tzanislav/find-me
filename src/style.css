@@ -43,7 +43,12 @@ html, body {
 /* Side columns: panels stacked, the column never runs past the map */
 .left-col,
 .right-col { display: flex; flex-direction: column; gap: 10px; }
-.left-col { align-items: flex-start; max-height: calc(100% - 24px); }
+/* Two columns on the left: tools, then the field guide. The columns stretch
+   to the wrapper's height (capped at the map), so their panels shrink to fit;
+   the empty space around the panels lets clicks through to the map. */
+.left-cols { display: flex; gap: 10px; max-height: calc(100% - 24px); pointer-events: none; }
+.left-col { align-items: flex-start; pointer-events: none; }
+.left-col > .panel { pointer-events: auto; }
 .right-col { width: 320px; max-height: calc(100% - 24px - 200px); } /* clears the legend */
 .left-col > .panel,
 .right-col > .panel { flex: 0 1 auto; min-height: 0; }
@@ -92,8 +97,8 @@ button[data-hold]::after {
 }
 .btn-arrest[data-hold]::after { background: rgba(255, 59, 92, 0.45); box-shadow: 0 0 12px rgba(255, 59, 92, 0.6); }
 
-/* ---------- Energy (top right) ---------- */
-.energy-panel { flex: none; gap: 5px; }
+/* ---------- Energy (left, above data access) ---------- */
+.energy-panel { width: 260px; flex: none; gap: 5px; }
 .energy-row { display: flex; justify-content: space-between; align-items: baseline; }
 #energy-value {
   font-family: var(--display);
@@ -226,7 +231,6 @@ button[data-hold]::after {
 }
 .src-icon svg { display: block; }
 .src-marker.inactive .src-icon { opacity: 0.2; filter: none; }
-
 /* Player's guess: white crosshair */
 .guess-pin { position: relative; }
 .guess-pin::before,
@@ -502,6 +506,18 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
 .mission-title.fail { color: var(--red); text-shadow: 0 0 12px var(--red), 0 0 36px var(--red), 0 0 80px rgba(255, 59, 92, 0.6); }
 #mission .row { gap: 14px; }
 #mission button { font-size: 15px; padding: 8px 22px; }
+.mission-seed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mission-seed b { color: var(--text); font-weight: 400; }
+#mission .mission-seed button { font-size: 12px; padding: 4px 12px; }
 .loading-title {
   font-family: var(--display);
   font-weight: 700;
@@ -524,3 +540,195 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
+
+/* ---------- Title screen, intro and credits (title.ts) ---------- */
+#title-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 6000; /* over the loading and mission overlays */
+  background: var(--void);
+  transition: opacity 0.4s;
+}
+#title-screen.hidden { opacity: 0; pointer-events: none; }
+.title-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  pointer-events: none; /* the buttons opt back in */
+}
+.game-title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(36px, 7vw, 104px);
+  letter-spacing: 0.18em;
+  padding-left: 0.18em; /* balance the trailing letter spacing so it stays centred */
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--cyan);
+  text-shadow: 0 0 10px rgba(46, 230, 255, 0.55), 0 0 32px rgba(46, 230, 255, 0.3), 0 0 72px rgba(46, 230, 255, 0.15);
+  transition: opacity 2.5s ease-in-out; /* TITLE_FADE_MS in title.ts */
+}
+.title-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  min-width: 220px;
+  pointer-events: auto;
+  transition: opacity 0.6s; /* BUTTONS_FADE_MS in title.ts */
+}
+/* Seed field, at the very bottom of the title screen */
+.title-seed {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  letter-spacing: 0.15em;
+  transition: opacity 0.6s; /* fades with the buttons */
+}
+.title-seed input {
+  width: 12ch;
+  background: rgba(10, 20, 70, 0.6);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-align: center;
+  outline: none;
+}
+.title-seed input:focus { border-color: var(--cyan); box-shadow: 0 0 8px rgba(46, 230, 255, 0.5); }
+.title-seed input::placeholder { color: var(--muted); opacity: 0.6; }
+.title-buttons button,
+.intro-actions button { font-size: 15px; padding: 9px 24px; letter-spacing: 0.2em; }
+/* Faded out but kept in the layout, so nothing shifts while it fades */
+.game-title.gone,
+.title-buttons.gone,
+.title-seed.gone,
+.intro-actions button.gone { opacity: 0; pointer-events: none; }
+
+.intro {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(760px, 88vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.intro.hidden { display: none; }
+.intro-text {
+  height: min(60vh, 520px);
+  overflow-y: auto;
+  padding: 20px 24px;
+  border: 1px solid rgba(80, 130, 255, 0.25);
+  box-shadow: inset 0 0 24px rgba(30, 70, 255, 0.1);
+  font-family: var(--mono);
+  font-size: 18px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+  text-shadow: 0 0 6px rgba(46, 230, 255, 0.45);
+}
+.intro-text .cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.1em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+  animation: cursor-blink 1s steps(1) infinite;
+}
+.intro-text.typing .cursor { animation: none; } /* solid while typing */
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
+.intro-actions { display: flex; justify-content: flex-end; }
+.intro-actions button { transition: opacity 0.6s; }
+
+.credits-backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 3, 15, 0.6);
+  transition: opacity 0.25s;
+}
+.credits-backdrop.hidden { opacity: 0; pointer-events: none; }
+.credits-window {
+  width: min(380px, 88vw);
+  max-height: 80vh;
+  padding: 18px 22px;
+  gap: 14px;
+  align-items: center;
+  text-align: center;
+}
+.credits-text {
+  overflow-y: auto;
+  white-space: pre-line;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ---------- Settings window (settings-window.ts) ---------- */
+.settings-window {
+  width: min(620px, 92vw);
+  max-height: 86vh;
+  padding: 18px 22px;
+  gap: 14px;
+}
+.settings-window > .title { text-align: center; }
+.settings-body {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-right: 8px;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+.settings-section { display: flex; flex-direction: column; gap: 8px; }
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr 200px 120px;
+  align-items: center;
+  gap: 12px;
+}
+.settings-name { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.settings-hint { font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.settings-row input[type='range'] { width: 100%; margin: 0; accent-color: var(--cyan); }
+.settings-value { text-align: right; color: #fff; text-shadow: 0 0 6px var(--cyan); white-space: nowrap; }
+.settings-pair { display: flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; }
+.settings-pair.wide { grid-column: 2 / 4; }
+.settings-number {
+  width: 5ch;
+  background: rgba(10, 20, 70, 0.6);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+.settings-number:focus { border-color: var(--cyan); box-shadow: 0 0 8px rgba(46, 230, 255, 0.5); }
+.settings-actions { justify-content: flex-end; align-items: center; }
+/* Between import/export on the left and reset/close on the right */
+.settings-status { flex: 1; min-width: 0; }
+.settings-status.error { color: var(--red); }

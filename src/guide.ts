@@ -7,7 +7,8 @@
 
 import { AUDIO_SAMPLE_RATE } from './audio/constants';
 import { SirenVoice } from './audio/siren';
-import { DOPPLER_EXAGGERATION } from './sim';
+import { dopplerExaggeration } from './sim';
+import { onSettingsChange } from './settings';
 import { KINDS, iconSvg } from './sources';
 
 const C = 343; // speed of sound, m/s
@@ -36,15 +37,15 @@ function passBy(d: number, v: number): PassPoint[] {
     const t = te + (r - d) / C;
     if (t < -SPAN_S || t > SPAN_S) continue;
     const radial = (v * x) / r; // > 0 moving away
-    pts.push({ t, f: (F0 * C) / (C + DOPPLER_EXAGGERATION * radial) });
+    pts.push({ t, f: (F0 * C) / (C + dopplerExaggeration() * radial) });
   }
   return pts;
 }
 
 /** Time the pitch takes to fall from 80% to 20% of its full swing: short means a close pass. */
 function fallTime(v: number, pts: PassPoint[]): number {
-  const hi = (F0 * C) / (C - DOPPLER_EXAGGERATION * v);
-  const lo = (F0 * C) / (C + DOPPLER_EXAGGERATION * v);
+  const hi = (F0 * C) / (C - dopplerExaggeration() * v);
+  const lo = (F0 * C) / (C + dopplerExaggeration() * v);
   const at = (frac: number) => pts.find((p) => p.f <= lo + (hi - lo) * frac)?.t ?? NaN;
   return at(0.2) - at(0.8);
 }
@@ -110,6 +111,7 @@ export class FieldGuide {
 
     new ResizeObserver(() => this.resize()).observe(this.canvas);
     document.fonts.ready.then(() => this.draw());
+    onSettingsChange(() => this.update()); // the Doppler setting changes the curve
     this.update();
   }
 
@@ -119,8 +121,8 @@ export class FieldGuide {
     (this.dist.nextElementSibling as HTMLElement).textContent = `${d} m`;
     (this.speed.nextElementSibling as HTMLElement).textContent = `${Math.round(v * 3.6)} km/h`;
     this.pts = passBy(d, v);
-    const hi = (F0 * C) / (C - DOPPLER_EXAGGERATION * v);
-    const lo = (F0 * C) / (C + DOPPLER_EXAGGERATION * v);
+    const hi = (F0 * C) / (C - dopplerExaggeration() * v);
+    const lo = (F0 * C) / (C + dopplerExaggeration() * v);
     const fall = fallTime(v, this.pts);
     this.readout.innerHTML =
       `Falls <b>${Math.round(hi - lo)} Hz</b> (${Math.round(((hi - lo) / F0) * 100)}%) ` +

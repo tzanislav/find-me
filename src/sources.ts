@@ -61,6 +61,8 @@ export interface SoundSource extends Track {
   altitude: number; // metres above the listener
   end: number; // clip time (s) it stops emitting or reaches its destination
   levelDb: number; // sound level at 1 m
+  /** Siren off: the vehicle drives its route (and shows on the map) but makes no sound. */
+  silent?: boolean;
 }
 
 export const CLIP_SECONDS = 600; // playable clip
@@ -86,21 +88,30 @@ export function makeSource(
   return { ...track, id, kind, name, end, altitude: opts.altitude ?? 0, levelDb: opts.levelDb };
 }
 
-const fromLatLngs = (pts: [number, number][]) => pts.map(([lat, lng]) => toLocal({ lat, lng }));
-
 /**
- * Hand-placed sources that are the same every round. Road vehicles, trams,
- * construction sites and the airplanes are placed per round in scenario.ts.
+ * Kinds whose location is public knowledge: on the map from the start of the
+ * round, no data to buy. Their icon never shows whether they are sounding, so
+ * when they sound has to be read from the recording.
  */
-/** Length of public/audio/church-bell.mp3, which rings once from the bell's start time. */
-const BELL_RING_S = 41;
-const BELL_START_S = 25;
+export const PUBLIC_KINDS = new Set<SourceKind>(['bell']);
 
-export const FIXED_SOURCES: SoundSource[] = [
-  makeSource('bell1', 'bell', 'Alexander Nevsky Cathedral', fromLatLngs([
-    [42.6959, 23.3328],
-  ]), { start: BELL_START_S, end: BELL_START_S + BELL_RING_S, levelDb: 122 }),
+/** Churches with bells, hand-placed from a user-marked screenshot. Each rings once per round (scenario.ts). */
+export const CHURCHES: { name: string; lat: number; lng: number }[] = [
+  { name: 'Sveta Nedelya Cathedral', lat: 42.6968, lng: 23.32136 },
+  { name: 'Alexander Nevsky Cathedral', lat: 42.6959, lng: 23.3328 },
+  { name: 'Southwest Church', lat: 42.68979, lng: 23.31616 },
+  { name: 'South Church', lat: 42.69004, lng: 23.3276 },
 ];
+
+/** Length of public/audio/church-bell.mp3, which rings once from the bell's start time. */
+export const BELL_RING_S = 41;
+export const BELL_LEVEL_DB = 122;
+
+/** A church's bell, ringing once from `start`. */
+export function makeBell(k: number, start: number): SoundSource {
+  const c = CHURCHES[k];
+  return makeSource(`bell${k + 1}`, 'bell', c.name, [toLocal(c)], { start, end: start + BELL_RING_S, levelDb: BELL_LEVEL_DB });
+}
 
 export const isMoving = (src: Track) => src.speed > 0 && src.path.length > 1;
 

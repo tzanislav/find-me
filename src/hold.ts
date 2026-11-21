@@ -2,12 +2,16 @@
 // that long: its fill (CSS var --hold, 0..1) grows while held, and letting go
 // or sliding off early cancels with no effect. When the fill completes, the
 // button dispatches a bubbling 'hold' event; listen for that instead of 'click'.
+// The charge sound plays while held; on completion it cuts to the sting.
+
+import { playUiSound } from './audio/ui-sounds';
 
 interface ActiveHold {
   btn: HTMLButtonElement;
   start: number;
   ms: number;
   raf: number;
+  stopCharge: () => void;
 }
 
 let active: ActiveHold | null = null;
@@ -20,6 +24,7 @@ export function holdingIn(root: HTMLElement): boolean {
 function cancel() {
   if (!active) return;
   cancelAnimationFrame(active.raf);
+  active.stopCharge();
   active.btn.style.setProperty('--hold', '0');
   active.btn.classList.remove('holding');
   active = null;
@@ -35,7 +40,10 @@ function frame(now: number) {
   }
   const { btn } = active;
   cancel();
-  if (btn.isConnected && !btn.disabled) btn.dispatchEvent(new CustomEvent('hold', { bubbles: true }));
+  if (btn.isConnected && !btn.disabled) {
+    playUiSound('sting');
+    btn.dispatchEvent(new CustomEvent('hold', { bubbles: true }));
+  }
 }
 
 document.addEventListener('pointerdown', (e) => {
@@ -43,7 +51,13 @@ document.addEventListener('pointerdown', (e) => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-hold]');
   if (!btn || btn.disabled) return;
   cancel();
-  active = { btn, start: performance.now(), ms: Number(btn.dataset.hold) || 1000, raf: 0 };
+  active = {
+    btn,
+    start: performance.now(),
+    ms: Number(btn.dataset.hold) || 1000,
+    raf: 0,
+    stopCharge: playUiSound('charge'),
+  };
   btn.classList.add('holding');
   active.raf = requestAnimationFrame(frame);
 });

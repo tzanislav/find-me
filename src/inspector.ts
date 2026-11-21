@@ -91,7 +91,7 @@ export function personHtml(p: Pedestrian, revealed: boolean, canArrest: boolean,
     : `<div class="photo unknown">?</div>
       <div>
         <dl class="insp-fields">${field('ID', p.id)}</dl>
-        <div class="muted small locked-note">Data locked. Reveal it from the cell tower this person is connected to.</div>
+        <div class="muted small locked-note">Data locked. Reveal it from any cell tower this person is in range of.</div>
       </div>`;
   return `
     <div class="insp-head"><span class="legend-dot"></span><span>Person</span></div>

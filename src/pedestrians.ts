@@ -38,8 +38,6 @@ const U_TURN_CHANCE = 0.02; // per graph node passed
 const CROSS_CHANCE = 0.04; // per graph node passed: switch to the other sidewalk
 /** The play box is split into this many cells per side for spawning (100 m cells). */
 const SPAWN_GRID = 20;
-/** People per round. */
-const PEDESTRIAN_COUNT = 500;
 
 function offsetSegment(a: Vec, b: Vec, len: number, off: number): [Vec, Vec] {
   // Right-hand normal of a->b (x east, y north)
@@ -94,12 +92,12 @@ function sidewalkWalk(g: Graph, rnd: Rng, from: number, first: Edge, f: number, 
 }
 
 /**
- * Spreads PEDESTRIAN_COUNT people evenly: the play box is split into a
+ * Spreads `count` people evenly: the play box is split into a
  * SPAWN_GRID x SPAWN_GRID grid, and people are dealt out to the cells that
  * have streets, in a shuffled order, round after round, so every street cell
  * gets one or two. Each starts at a random point on a street inside its cell.
  */
-export function generatePedestrians(walk: Graph, rnd: Rng): Pedestrian[] {
+export function generatePedestrians(walk: Graph, rnd: Rng, count: number): Pedestrian[] {
   const cells = cellEdges(walk, SPAWN_GRID, HALF_SIZE_M);
   const people: Pedestrian[] = [];
   const usedIds = new Set<string>();
@@ -110,7 +108,7 @@ export function generatePedestrians(walk: Graph, rnd: Rng): Pedestrian[] {
   );
   if (order.length === 0) return people;
 
-  for (let k = 0; people.length < PEDESTRIAN_COUNT && k < PEDESTRIAN_COUNT * 3; k++) {
+  for (let k = 0; people.length < count && k < count * 3; k++) {
     const c = order[k % order.length];
     const spot = spotInCell(walk, rnd, cells[c], c, SPAWN_GRID, HALF_SIZE_M);
     if (!spot) continue;

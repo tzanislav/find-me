@@ -7,6 +7,7 @@ import { BOUNDS, dist, toLatLng, type Vec } from './geo';
 import {
   CLIP_SECONDS,
   KINDS,
+  PUBLIC_KINDS,
   headingAt,
   iconSvg,
   isActive,
@@ -29,9 +30,11 @@ import { FieldGuide } from './guide';
 import { loadOsm } from './osm';
 import { buildWorld, generateRound, type Round, type World } from './scenario';
 import type { Pedestrian } from './pedestrians';
-import { TOWER_COLOR, TOWER_RANGE_M, nearestTower, towerIconSvg, type Tower } from './towers';
+import { TOWER_COLOR, TOWER_RANGE_M, inRange, towerIconSvg, type Tower } from './towers';
 import { emptyHtml, fullName, personHtml, targetHtml, towerHtml } from './inspector';
 import { holdingIn } from './hold';
+import { TitleScreen } from './title';
+import { randomSeed } from './rng';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -120,6 +123,7 @@ document.head.appendChild(kindStyle);
 // ---------- Source layers (rebuilt every round) ----------
 // Moving sources are drawn as their vehicle icon only, with no route.
 // Fixed sources (bells, construction) also get a ring marking where they are.
+// Public kinds (church bells) are on the map from the start; the rest wait for their data to be bought.
 const zones = L.layerGroup().addTo(map);
 const rangeLayer = L.layerGroup().addTo(map);
 const towerLayer = L.layerGroup().addTo(map);
@@ -157,7 +161,8 @@ function buildSourceLayers(sources: SoundSource[]) {
     if (isMoving(src)) return null;
     const k = KINDS[src.kind];
     return L.circle(ll(src.path[0]), { radius: 45, color: k.color, weight: 1.5, dashArray: '3 5', fillOpacity: 0.06, className: `neon-line c-${src.kind}` })
-      .bindTooltip(`${src.name}, active ${src.start}-${src.end}s`, { className: 'neon-tip' });
+      // A public source's tooltip names it but never says when it sounds
+      .bindTooltip(PUBLIC_KINDS.has(src.kind) ? src.name : `${src.name}, active ${src.start}-${src.end}s`, { className: 'neon-tip' });
   });
 
   sourceMarkers = sources.map((src) =>
@@ -177,20 +182,22 @@ function buildSourceLayers(sources: SoundSource[]) {
 const START_ENERGY = 100;
 const INTEL_HOLD_MS = 1000;
 const ARREST_HOLD_MS = 2000;
-/** Cell tower action: names and numbers of everyone connected to it right now. */
+/** Cell tower action: names and numbers of everyone within its range right now. */
 const REVEAL_DATA_COST = 20;
 
 interface Intel {
   label: string;
   cost: number;
   kinds: SourceKind[]; // source icons it puts on the map
+  tip: string; // hover tooltip
 }
+const SIREN_NOTE = 'Note: not all vehicles have their sirens on.';
 const INTEL: Intel[] = [
-  { label: 'Access Transportation Data', cost: 10, kinds: ['tram'] },
-  { label: 'Access Police Car Data', cost: 20, kinds: ['police'] },
-  { label: 'Access Ambulance Data', cost: 20, kinds: ['ambulance'] },
-  { label: 'Get Air Traffic Data', cost: 25, kinds: ['airplane'] },
-  { label: 'Get Construction Records', cost: 30, kinds: ['construction'] },
+  { label: 'Access Transportation Data', cost: 10, kinds: ['tram'], tip: 'Access the data for the trams in the area.' },
+  { label: 'Access Police Car Data', cost: 20, kinds: ['police'], tip: `Access the data for the police cars in the area.\n${SIREN_NOTE}` },
+  { label: 'Access Ambulance Data', cost: 20, kinds: ['ambulance'], tip: `Access the data for the emergency vehicles in the area.\n${SIREN_NOTE}` },
+  { label: 'Get Air Traffic Data', cost: 25, kinds: ['airplane'], tip: 'Access the flight paths of the airplanes passing over the area.' },
+  { label: 'Get Construction Records', cost: 30, kinds: ['construction'], tip: 'Access the locations of the construction sites in the area.' },
 ];
 
 let energy = START_ENERGY;
@@ -201,6 +208,7 @@ const intelButtons = INTEL.map((intel, i) => {
   const btn = document.createElement('button');
   btn.className = 'intel-btn';
   btn.dataset.hold = String(INTEL_HOLD_MS);
+  btn.title = intel.tip;
   btn.innerHTML = `<span>${intel.label}</span><span class="cost">${intel.cost}</span>`;
   btn.addEventListener('hold', () => buyIntel(i));
   $('intel-buttons').appendChild(btn);
@@ -237,11 +245,11 @@ function buyIntel(i: number) {
   renderEnergy();
 }
 
-/** Puts the markers and zone rings of unlocked kinds on the map. */
+/** Puts the markers and zone rings of unlocked and public kinds on the map. */
 function showIntel() {
   if (!round) return;
   round.sources.forEach((src, i) => {
-    if (!unlockedKinds.has(src.kind)) return;
+    if (!unlockedKinds.has(src.kind) && !PUBLIC_KINDS.has(src.kind)) return;
     if (!sourceLayer.hasLayer(sourceMarkers[i])) sourceMarkers[i].addTo(sourceLayer);
     const zone = zoneCircles[i];
     if (zone && !zones.hasLayer(zone)) zone.addTo(zones);
@@ -294,13 +302,13 @@ function buildTowerLayer(towers: Tower[]) {
   );
 }
 
-/** Pedestrians whose phone is on tower `ti` right now (nearest tower), sorted by ID. */
+/** Pedestrians within range of tower `ti` right now, sorted by ID. Overlapping towers share people. */
 function connectedTo(ti: number): number[] {
   if (!round) return [];
   const { pedestrians, towers } = round;
   return pedestrians
     .map((_, i) => i)
-    .filter((i) => nearestTower(towers, positionAt(pedestrians[i], time)) === ti)
+    .filter((i) => inRange(towers[ti], positionAt(pedestrians[i], time)))
     .sort((a, b) => pedestrians[a].id.localeCompare(pedestrians[b].id));
 }
 
@@ -440,22 +448,45 @@ function showMission(success: boolean | null) {
   title.textContent = success ? 'Mission completed' : 'Mission failed';
   title.classList.toggle('ok', success);
   title.classList.toggle('fail', !success);
+  $('mission-seed-value').textContent = round ? String(round.seed) : '';
+  copySeedBtn.textContent = 'Copy seed';
 }
+
+const copySeedBtn = $<HTMLButtonElement>('btn-mission-copy-seed');
+let copyResetTimer = 0;
+copySeedBtn.addEventListener('click', async () => {
+  if (!round) return;
+  let ok = true;
+  try {
+    await navigator.clipboard.writeText(String(round.seed));
+  } catch (err) {
+    console.error('Copying the seed failed', err);
+    ok = false;
+  }
+  copySeedBtn.textContent = ok ? 'Copied' : 'Copy failed';
+  clearTimeout(copyResetTimer);
+  copyResetTimer = window.setTimeout(() => (copySeedBtn.textContent = 'Copy seed'), 1500);
+});
 
 $('btn-mission-hide').addEventListener('click', () => showMission(null));
 $('btn-mission-retry').addEventListener('click', () => void newRound());
+$('btn-mission-menu').addEventListener('click', () => {
+  setPlaying(false);
+  showMission(null);
+  title.show();
+});
 
 /** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
 const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 
 let building = false;
 
-async function newRound() {
+/** Deals the round for `seed`; the same seed always gives the same round. */
+async function newRound(seed = randomSeed()) {
   if (!world || building) return;
   building = true;
   setPlaying(false);
   try {
-    const seed = Math.floor(Math.random() * 2 ** 31);
     const minutes = Math.round(CLIP_SECONDS / 60);
     const step = async (status: string) => {
       setLoading(status);
@@ -497,7 +528,7 @@ async function newRound() {
     spectro.setTags(tags);
     spectro.setData(spec);
     if (audio) player.setSamples(audio);
-    setTime(0);
+    showIntel(); // public sources (churches) are known from the start; also syncs time to 0
     console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
   } finally {
     building = false;
@@ -549,9 +580,10 @@ function setTime(t: number) {
     const el = marker.getElement();
     if (!el) return;
     const active = isActive(src, t);
-    // Vehicles exist only between spawn and arrival; fixed sources just dim when silent.
+    // Vehicles exist only between spawn and arrival; fixed sources just dim when silent,
+    // except public ones (churches), whose icon must not give away when they ring.
     el.classList.toggle('despawned', isMoving(src) && !active);
-    el.classList.toggle('inactive', !isMoving(src) && !active);
+    el.classList.toggle('inactive', !isMoving(src) && !active && !PUBLIC_KINDS.has(src.kind));
     if (src.kind === 'airplane') {
       (el.firstElementChild as HTMLElement).style.transform = `rotate(${headingAt(src, t)}deg)`;
     }
@@ -627,6 +659,7 @@ $('btn-zoom-out').addEventListener('click', () => spectro.zoomOut());
 $('btn-zoom-fit').addEventListener('click', () => spectro.resetZoom());
 
 window.addEventListener('keydown', (e) => {
+  if (title.visible) return; // game hotkeys are off on the title screen
   if ((e.target as HTMLElement).tagName === 'SELECT') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser zoom shortcuts alone
   if (e.code === 'Space') {
@@ -644,23 +677,28 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ---------- Boot ----------
-async function boot() {
+// Downloads start straight away, while the title and intro are on screen;
+// building the world and the first round waits for the intro's Start button.
+const osmData = loadOsm();
+osmData.catch(() => {}); // reported by boot() once it awaits it
+const noiseMapData = loadNoiseMap().catch((err) => {
+  console.error('Noise map failed to load, traffic bed uses a flat level', err);
+  return null;
+});
+const sampleData = loadSamples().catch((err) => {
+  console.error('Sound samples failed to load, the clip will be silent', err);
+  return null;
+});
+
+async function boot(seed: number) {
   setLoading('Loading map data');
-  const noiseMap = loadNoiseMap().catch((err) => {
-    console.error('Noise map failed to load, traffic bed uses a flat level', err);
-    return null;
-  });
-  const samples = loadSamples().catch((err) => {
-    console.error('Sound samples failed to load, the clip will be silent', err);
-    return null;
-  });
-  const osm = await loadOsm();
+  const osm = await osmData;
   setLoading('Loading sounds');
   addBasemap(map, 'basemap', osm).catch((err) => console.error('Basemap failed to render', err));
   world = buildWorld(osm);
-  const bank = await samples;
+  const bank = await sampleData;
   if (bank) {
-    audioAssets = { samples: bank, noiseMap: await noiseMap };
+    audioAssets = { samples: bank, noiseMap: await noiseMapData };
     spectralProfiles = {
       construction: profileLoop(bank.construction),
       city: profileLoop(bank.city),
@@ -670,11 +708,27 @@ async function boot() {
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,
   );
-  await newRound();
+  await newRound(seed);
 }
 
-boot().catch((err) => {
-  console.error(err);
-  $('result').textContent = 'Failed to load map data. See console.';
-  setLoading('Failed to load. See console.');
-});
+let booted = false;
+
+/**
+ * The intro's Start button: the first time loads everything, after that it deals a fresh round.
+ * Uses the seed typed on the title screen, or a random one if the field is empty.
+ */
+function startGame() {
+  const seed = title.seed ?? randomSeed();
+  if (booted) {
+    void newRound(seed);
+    return;
+  }
+  booted = true;
+  boot(seed).catch((err) => {
+    console.error(err);
+    $('result').textContent = 'Failed to load map data. See console.';
+    setLoading('Failed to load. See console.');
+  });
+}
+
+const title = new TitleScreen(startGame);

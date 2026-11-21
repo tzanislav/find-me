@@ -3,21 +3,67 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Find Me · prototype</title>
+    <title>For Your Safety</title>
     <link rel="icon" href="data:," />
   </head>
   <body>
+    <!-- Title screen, credits and typed intro (title.ts). Covers the game until Start. -->
+    <div id="title-screen">
+      <div class="title-stage">
+        <h1 id="title-name" class="game-title">For your safety</h1>
+        <div id="title-buttons" class="title-buttons">
+          <button id="btn-title-start">Start</button>
+          <button id="btn-title-settings">Settings</button>
+          <button id="btn-title-credits">Credits</button>
+        </div>
+      </div>
+      <div id="intro" class="intro hidden">
+        <div id="intro-text" class="intro-text"><span id="intro-typed"></span><span class="cursor"></span></div>
+        <div class="intro-actions"><button id="btn-intro-start" class="gone">Start</button></div>
+      </div>
+      <!-- Empty = a random round; a number replays that round -->
+      <label id="title-seed" class="title-seed">
+        Seed <input id="seed-input" type="text" inputmode="numeric" maxlength="10" placeholder="random" autocomplete="off" spellcheck="false" />
+      </label>
+      <div id="credits" class="credits-backdrop hidden">
+        <div class="panel credits-window">
+          <div class="title">Credits</div>
+          <div id="credits-text" class="credits-text"></div>
+          <button id="btn-credits-close">Close</button>
+        </div>
+      </div>
+      <!-- Settings window (settings-window.ts builds its controls); saved in localStorage -->
+      <div id="settings" class="credits-backdrop hidden">
+        <div class="panel settings-window">
+          <div class="title">Settings</div>
+          <div id="settings-body" class="settings-body"></div>
+          <div class="row settings-actions">
+            <button id="btn-settings-export" title="Download the current settings as a .json file">Export</button>
+            <button id="btn-settings-import" title="Load settings from an exported .json file">Import</button>
+            <input id="settings-import-file" type="file" accept=".json,application/json" hidden />
+            <span id="settings-status" class="muted small settings-status"></span>
+            <button id="btn-settings-reset">Reset to defaults</button>
+            <button id="btn-settings-close">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <!-- Shown while a round is being simulated; the map stays faded in the back -->
-    <div id="loading" class="screen-overlay">
+    <div id="loading" class="screen-overlay hidden">
       <div class="loading-title">LOADING</div>
       <div id="loading-status" class="loading-status">Loading map data</div>
     </div>
     <!-- Shown after an arrest -->
     <div id="mission" class="screen-overlay hidden">
       <div id="mission-title" class="mission-title"></div>
+      <div class="mission-seed">
+        Seed <b id="mission-seed-value"></b>
+        <button id="btn-mission-copy-seed">Copy seed</button>
+      </div>
       <div class="row">
         <button id="btn-mission-hide">Hide</button>
         <button id="btn-mission-retry">Try again</button>
+        <button id="btn-mission-menu">Main Menu</button>
       </div>
     </div>
     <div id="app">
@@ -26,12 +72,8 @@
         <div id="map"></div>
 
         <div class="map-overlay top-right right-col">
-          <div class="panel energy-panel">
-            <div class="energy-row"><span class="section-label">Energy</span><b id="energy-value">100</b></div>
-            <div class="energy-bar"><div id="energy-fill"></div></div>
-          </div>
           <div class="panel" id="side">
-            <div class="title">FIND ME <span class="badge">PROTOTYPE</span></div>
+            <div class="title">FOR YOUR SAFETY <span class="badge">PROTOTYPE</span></div>
             <div class="muted small">One of these people recorded the sound below. Everyone's data is locked, but every phone talks to its nearest cell tower. Find the target and arrest them by ID.</div>
             <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>
             <div class="section-label">Inspector</div>
@@ -43,14 +85,22 @@
           </div>
         </div>
 
-        <div class="map-overlay top-left left-col">
-          <div class="panel" id="target"></div>
-          <div class="panel" id="intel">
-            <div class="section-label">Data access</div>
-            <div class="muted small">Hold a button for 1 s to buy the data.</div>
-            <div id="intel-buttons"></div>
+        <div class="map-overlay top-left left-cols">
+          <div class="left-col">
+            <div class="panel" id="target"></div>
+            <div class="panel energy-panel">
+              <div class="energy-row"><span class="section-label">Energy</span><b id="energy-value">100</b></div>
+              <div class="energy-bar"><div id="energy-fill"></div></div>
+            </div>
+            <div class="panel" id="intel">
+              <div class="section-label">Data access</div>
+              <div class="muted small">Hold a button for 1 s to buy the data.</div>
+              <div id="intel-buttons"></div>
+            </div>
           </div>
-          <div class="panel" id="guide"></div>
+          <div class="left-col">
+            <div class="panel" id="guide"></div>
+          </div>
         </div>
         <div class="map-overlay bottom-right panel" id="legend"></div>
       </section>

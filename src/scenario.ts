@@ -5,9 +5,21 @@ import { buildGraph, cellEdges, pointOnEdge, randomRoute, routeFrom, spotInCell,
 import type { OsmData } from './osm';
 import { mulberry32, pick, randInt, range, shuffle, type Rng } from './rng';
 import { PEDESTRIAN_STREET_TAG, generatePedestrians, type Pedestrian } from './pedestrians';
-import { AIRPLANE_RANGE_M } from './sim';
+import { airplaneRangeM } from './sim';
+import { settings, type CountRange } from './settings';
 import { generateTowers, type Tower } from './towers';
-import { CLIP_SECONDS, FIXED_SOURCES, PREHEAT_SECONDS, KINDS, makeSource, positionAt, type SoundSource, type SourceKind } from './sources';
+import {
+  BELL_RING_S,
+  CHURCHES,
+  CLIP_SECONDS,
+  PREHEAT_SECONDS,
+  KINDS,
+  makeBell,
+  makeSource,
+  positionAt,
+  type SoundSource,
+  type SourceKind,
+} from './sources';
 
 export interface World {
   road: Graph; // directed, cars
@@ -48,7 +60,12 @@ export function buildWorld(osm: OsmData): World {
 interface VehicleSpec {
   kind: SourceKind;
   network: 'road' | 'tram';
-  concurrent: [number, number]; // min/max vehicles of this kind on the map at any moment
+  concurrent: () => CountRange; // min/max vehicles of this kind on the map at any moment
+  /**
+   * Siren vehicles: how many of the slots have their siren on (min/max, capped
+   * at the slot count). The rest drive silently. Without it, every vehicle sounds.
+   */
+  sirensOn?: () => CountRange;
   speed: [number, number]; // m/s
   levelDb: number;
   spawn: 'area' | 'edge'; // anywhere around the play box, or only at the outer edge of the map data
@@ -61,11 +78,17 @@ interface VehicleSpec {
   firstSpread?: 'even';
 }
 
-// Tune the mix here.
+/** A fixed fleet of `total`, of which between `minActive` and `maxActive` have their siren on. */
+const sirenFleet = (key: 'ambulance' | 'police'): Pick<VehicleSpec, 'concurrent' | 'sirensOn'> => ({
+  concurrent: () => [settings.spawn[key].total, settings.spawn[key].total],
+  sirensOn: () => [settings.spawn[key].minActive, settings.spawn[key].maxActive],
+});
+
+// Tune the mix here. Ambulance and police counts come from the settings (Spawn rates).
 const VEHICLES: VehicleSpec[] = [
-  { kind: 'ambulance', network: 'road', concurrent: [3, 4], speed: [12, 17], levelDb: 120, spawn: 'area' },
-  { kind: 'police', network: 'road', concurrent: [3, 5], speed: [11, 16], levelDb: 118, spawn: 'area' },
-  { kind: 'tram', network: 'tram', concurrent: [8, 10], speed: [6, 9], levelDb: 102, spawn: 'edge', firstSpread: 'even' },
+  { kind: 'ambulance', network: 'road', ...sirenFleet('ambulance'), speed: [12, 17], levelDb: 120, spawn: 'area' },
+  { kind: 'police', network: 'road', ...sirenFleet('police'), speed: [11, 16], levelDb: 118, spawn: 'area' },
+  { kind: 'tram', network: 'tram', concurrent: () => [8, 10], speed: [6, 9], levelDb: 102, spawn: 'edge', firstSpread: 'even' },
 ];
 
 /** Grid for 'even' starts: 4 x 4 cells of 500 m over the play box. 12 of them contain tram track. */
@@ -155,17 +178,22 @@ function startEvenly(world: World, rnd: Rng, spec: VehicleSpec, count: number): 
  * pre-heat (negative clip time, never shown or heard), so at t = 0 vehicles are
  * already mid-route all over the map and the density stays flat for the clip.
  * With firstSpread 'even', the first vehicles are instead placed evenly at t = 0.
+ * With sirensOn, a random set of slots keeps its siren on for every trip and
+ * the other slots drive silently, so that many are sounding at any moment.
  */
 function spawnFleet(world: World, rnd: Rng, spec: VehicleSpec): SoundSource[] {
   const out: SoundSource[] = [];
-  const wanted = randInt(rnd, spec.concurrent);
+  const wanted = randInt(rnd, spec.concurrent());
   const firstTrips = spec.firstSpread === 'even' ? startEvenly(world, rnd, spec, wanted) : null;
   const slots = firstTrips ? firstTrips.length : wanted;
+  const sounding = spec.sirensOn ? Math.min(slots, randInt(rnd, spec.sirensOn())) : slots;
+  const silentSlots = new Set(shuffle(rnd, Array.from({ length: slots }, (_, s) => s)).slice(sounding));
   for (let slot = 0; slot < slots; slot++) {
+    const silent = silentSlots.has(slot) || undefined;
     let t = -range(rnd, [0, PREHEAT_SECONDS]);
     const first = firstTrips?.[slot];
     if (first) {
-      out.push({ ...first, id: `${spec.kind}${out.length + 1}`, name: `${KINDS[spec.kind].label} ${out.length + 1}` });
+      out.push({ ...first, id: `${spec.kind}${out.length + 1}`, name: `${KINDS[spec.kind].label} ${out.length + 1}`, silent });
       t = first.end + range(rnd, RESPAWN_DELAY_S);
     }
     while (t < CLIP_SECONDS) {
@@ -173,7 +201,7 @@ function spawnFleet(world: World, rnd: Rng, spec: VehicleSpec): SoundSource[] {
       if (!trip) break;
       if (trip.end >= 0) {
         const n = out.length + 1;
-        out.push({ ...trip, id: `${spec.kind}${n}`, name: `${KINDS[spec.kind].label} ${n}` });
+        out.push({ ...trip, id: `${spec.kind}${n}`, name: `${KINDS[spec.kind].label} ${n}`, silent });
       }
       t = trip.end + range(rnd, RESPAWN_DELAY_S);
     }
@@ -199,20 +227,19 @@ function nearSiren(p: Pedestrian, sirens: SoundSource[], maxDist: number): boole
 }
 
 // ---- Construction sites ----
-const CONSTRUCTION_SITES: [number, number] = [2, 3]; // per round
 const CONSTRUCTION_LEVEL_DB = 112;
 const CONSTRUCTION_AREA = 0.85; // fraction of the play box half-size they can be placed in
 const CONSTRUCTION_MIN_SPACING_M = 400; // keeps sites apart so each is its own clue
 const CONSTRUCTION_SETBACK_M = 15; // off the street centre line, on the building side
 
-/** 2-3 sites at random spots beside streets in the play box, kept well apart. Active all clip. */
+/** Sites (count per the settings) at random spots beside streets in the play box, kept well apart. Active all clip. */
 function placeConstructionSites(world: World, rnd: Rng): SoundSource[] {
   const g = world.walk;
   const limit = HALF_SIZE_M * CONSTRUCTION_AREA;
   const nodes = g.nodes
     .map((_, i) => i)
     .filter((i) => g.adj[i].length > 0 && Math.abs(g.nodes[i].x) <= limit && Math.abs(g.nodes[i].y) <= limit);
-  const want = randInt(rnd, CONSTRUCTION_SITES);
+  const want = randInt(rnd, settings.spawn.construction);
   const sites: Vec[] = [];
   for (let attempt = 0; attempt < 200 && sites.length < want; attempt++) {
     const i = pick(rnd, nodes);
@@ -243,10 +270,8 @@ const AIRPLANE_LEVEL_DB = 140;
 /** It passes overhead at a random time this far from either end of the clip. */
 const AIRPLANE_TIME_MARGIN_S = 60;
 /** Its line runs this far either side of the pass point: past its hearing range, so it fades in and out. */
-const AIRPLANE_HALF_PATH_M = AIRPLANE_RANGE_M + 500;
+const airplaneHalfPathM = () => airplaneRangeM() + 500;
 
-/** Airliners per round. */
-const AIRPLANES: [number, number] = [2, 3];
 /** Pass times are at least this far apart, so each one is its own clue. */
 const AIRPLANE_MIN_GAP_S = 100;
 
@@ -270,24 +295,37 @@ function airplanePassTimes(rnd: Rng, n: number): number[] {
 function placeAirplane(rnd: Rng, passTime: number, n: number): SoundSource {
   const p = { x: range(rnd, [-HALF_SIZE_M, HALF_SIZE_M]), y: range(rnd, [-HALF_SIZE_M, HALF_SIZE_M]) };
   const heading = rnd() * 2 * Math.PI;
-  const dx = Math.sin(heading) * AIRPLANE_HALF_PATH_M;
-  const dy = Math.cos(heading) * AIRPLANE_HALF_PATH_M;
+  const half = airplaneHalfPathM();
+  const dx = Math.sin(heading) * half;
+  const dy = Math.cos(heading) * half;
   return makeSource(`air${n}`, 'airplane', `Airliner ${n}`, [{ x: p.x - dx, y: p.y - dy }, { x: p.x + dx, y: p.y + dy }], {
     speed: AIRPLANE_SPEED_MS,
-    start: passTime - AIRPLANE_HALF_PATH_M / AIRPLANE_SPEED_MS, // reaches p at passTime
+    start: passTime - half / AIRPLANE_SPEED_MS, // reaches p at passTime
     altitude: AIRPLANE_ALTITUDE_M,
     levelDb: AIRPLANE_LEVEL_DB,
   });
 }
 
+// ---- Church bells ----
+/**
+ * Every church rings once per round, at its own random time, with the whole
+ * ring inside the clip. Times are independent: churches are 600+ m apart, so
+ * nobody hears two at once anyway.
+ */
+function ringChurchBells(rnd: Rng): SoundSource[] {
+  return CHURCHES.map((_, k) => makeBell(k, range(rnd, [0, CLIP_SECONDS - BELL_RING_S])));
+}
+
 export function generateRound(world: World, seed: number): Round {
   const rnd = mulberry32(seed);
-  const airplanes = airplanePassTimes(rnd, randInt(rnd, AIRPLANES)).map((t, k) => placeAirplane(rnd, t, k + 1));
-  const sources = [...FIXED_SOURCES, ...airplanes, ...placeConstructionSites(world, rnd)];
+  const airplanes = airplanePassTimes(rnd, randInt(rnd, settings.spawn.airplane)).map((t, k) => placeAirplane(rnd, t, k + 1));
+  // Own stream, so the bells don't shift the rest of the round for a given seed
+  const bells = ringChurchBells(mulberry32(seed ^ 0x9e3779b9));
+  const sources = [...bells, ...airplanes, ...placeConstructionSites(world, rnd)];
   for (const spec of VEHICLES) sources.push(...spawnFleet(world, rnd, spec));
-  const pedestrians = generatePedestrians(world.walk, rnd);
+  const pedestrians = generatePedestrians(world.walk, rnd, settings.spawn.pedestrians);
   // Pick the target among people who pass near a siren, so the clip has a clue to place them.
-  const sirens = sources.filter((s) => SIREN_KINDS.has(s.kind));
+  const sirens = sources.filter((s) => SIREN_KINDS.has(s.kind) && !s.silent);
   const candidates = pedestrians.filter((p) => nearSiren(p, sirens, TARGET_SIREN_DISTANCE_M));
   const target = pick(rnd, candidates.length > 0 ? candidates : pedestrians);
   // Own streams, so these details don't shift the rest of the round for a given seed

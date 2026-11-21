@@ -8,6 +8,7 @@ import { AMBULANCE_SIREN, wailHz, yelpHz } from './audio/siren';
 import { CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from './audio/constants';
 import type { SampleProfile } from './audio/profile';
 import { CLIP_SECONDS, isActive, positionAt, type SoundSource, type SourceKind, type Track } from './sources';
+import { settings, volumeDb } from './settings';
 
 export const COLS_PER_SEC = 10;
 export const COLS = CLIP_SECONDS * COLS_PER_SEC;
@@ -16,12 +17,14 @@ export const MAX_HZ = 5000;
 export const HZ_PER_BIN = MAX_HZ / BINS;
 
 const SPEED_OF_SOUND = 343;
-const AIR_ABSORPTION_DB_PER_KHZ_KM = 4; // crude high-frequency loss with distance
+/** Crude high-frequency loss with distance, dB per kHz per km. Settings: Sound propagation. */
+const airAbsorption = () => settings.propagation.airAbsorption;
 
+// Hearing ranges and Doppler come from the settings (Sound propagation).
 /** How far a pedestrian can hear. Sources beyond this are silent. */
-export const HEARING_RANGE_M = 300;
-/** The plane flies at 700 m, so it is exempt from the normal range. */
-export const AIRPLANE_RANGE_M = 3000;
+export const hearingRangeM = () => settings.propagation.hearingRangeM;
+/** The plane flies at 700 m, so it has its own, longer range. */
+export const airplaneRangeM = () => settings.propagation.airplaneRangeM;
 /** Fade out over the last stretch of the range so sources don't pop in and out. */
 const RANGE_FADE_FRACTION = 1 / 6;
 
@@ -29,21 +32,22 @@ const RANGE_FADE_FRACTION = 1 / 6;
  * Doppler shift is this many times stronger than real, so pass-bys are easy to
  * hear and see. 1 = realistic.
  */
-export const DOPPLER_EXAGGERATION = 2;
+export const dopplerExaggeration = () => settings.propagation.doppler;
 
 export function hearingRange(src: SoundSource): number {
-  return src.kind === 'airplane' ? AIRPLANE_RANGE_M : HEARING_RANGE_M;
+  return src.kind === 'airplane' ? airplaneRangeM() : hearingRangeM();
 }
 
 /**
  * Level change from distance alone. Geometric spreading of a point source
- * (inverse square law, -6 dB per doubling of distance, 0 dB at 1 m), then a
- * smooth fade to silence at the edge of the hearing range.
+ * (by default the inverse square law, -6 dB per doubling of distance, 0 dB at
+ * 1 m; the falloff setting scales it), then a smooth fade to silence at the
+ * edge of the hearing range.
  * Returns null when the source is out of range.
  */
-export function distanceGainDb(d: number, range = HEARING_RANGE_M): number | null {
+export function distanceGainDb(d: number, range = hearingRangeM()): number | null {
   if (d >= range) return null;
-  const spreading = -20 * Math.log10(Math.max(d, 1));
+  const spreading = -20 * (settings.propagation.falloffDb / 6) * Math.log10(Math.max(d, 1));
   const k = Math.min(1, (range - d) / (range * RANGE_FADE_FRACTION));
   const fade = k * k * (3 - 2 * k); // smoothstep, as a power factor
   return spreading + 10 * Math.log10(fade);
@@ -91,7 +95,7 @@ function distance3d(src: SoundSource, p: Vec, listener: Vec): number {
  *
  * `tau` is the source time to play back at t. Physically it would be te =
  * t - d / c; using t - k * d / c instead multiplies the Doppler shift by k
- * (DOPPLER_EXAGGERATION) while staying within a second of te. `doppler` is
+ * (the Doppler setting) while staying within a second of te. `doppler` is
  * the matching (exaggerated) pitch factor, d tau / dt.
  */
 export function propagate(src: SoundSource, listener: Vec, t: number) {
@@ -105,7 +109,7 @@ export function propagate(src: SoundSource, listener: Vec, t: number) {
   const dPlus = distance3d(src, positionAt(src, te + h), listener);
   const dMinus = distance3d(src, positionAt(src, te - h), listener);
   const radialVelocity = (dPlus - dMinus) / (2 * h); // > 0 means moving away
-  const k = DOPPLER_EXAGGERATION;
+  const k = dopplerExaggeration();
   const doppler = SPEED_OF_SOUND / (SPEED_OF_SOUND + k * radialVelocity);
   const tau = te - ((k - 1) * d) / SPEED_OF_SOUND;
   return { te, tau, d, doppler };
@@ -171,6 +175,9 @@ function signature(kind: SourceKind, lt: number, dop: number, L: number, e: Emit
 export function simulate(sources: SoundSource[], listener: Track, seed = 1, profiles: SpectralProfiles = {}): Spectrogram {
   const rnd = mulberry32(seed);
   const pow = new Float32Array(COLS * BINS);
+  const absorb = airAbsorption();
+  // Per-kind volume settings in dB; null = muted, left out of the picture
+  const volumes = Object.fromEntries(sources.map((s) => [s.kind, volumeDb(s.kind)])) as Record<SourceKind, number | null>;
 
   for (let col = 0; col < COLS; col++) {
     const t = col / COLS_PER_SEC;
@@ -213,20 +220,24 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1, prof
 
     // City background: the real recording when loaded (as heard in the audio),
     // otherwise a synthetic pinkish, flickering noise floor.
-    if (profiles.city) {
-      makeEmit(0).spectrum(profileFrame(profiles.city, t, cityOffsetS(seed))!, CITY_BACKGROUND_DB, 1);
-    } else {
-      makeEmit(0).band(20, MAX_HZ, 40 + (rnd() - 0.5) * 4, -3);
+    // Scaled by the city volume setting; muted leaves it out.
+    const cityDb = volumeDb('city');
+    if (cityDb !== null && profiles.city) {
+      makeEmit(0).spectrum(profileFrame(profiles.city, t, cityOffsetS(seed))!, CITY_BACKGROUND_DB + cityDb, 1);
+    } else if (cityDb !== null) {
+      makeEmit(0).band(20, MAX_HZ, 40 + cityDb + (rnd() - 0.5) * 4, -3);
       for (let b = 0; b < BINS; b++) pow[base + b] *= 0.6 + 0.8 * rnd();
     }
 
     sources.forEach((src, i) => {
+      if (src.silent) return;
       const { te, tau, d, doppler } = propagate(src, here, t);
       if (!isActive(src, te)) return;
       const gain = distanceGainDb(d, hearingRange(src));
-      if (gain === null) return;
-      const received = src.levelDb + gain;
-      const emit = makeEmit(AIR_ABSORPTION_DB_PER_KHZ_KM * (d / 1000));
+      const volume = volumes[src.kind];
+      if (gain === null || volume === null) return;
+      const received = src.levelDb + gain + volume;
+      const emit = makeEmit(absorb * (d / 1000));
       const profile = profiles[src.kind];
       if (profile) {
         const frame = profileFrame(profile, tau - src.start, voiceOffsetS(seed, i));

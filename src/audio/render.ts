@@ -21,6 +21,7 @@ import { AUDIO_SAMPLE_RATE, CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from
 import { Lowpass, applyReverb } from './dsp';
 import { LoopVoice, OneShotVoice, isOneShot, type SampleBank, type SampleName } from './samples';
 import { SirenVoice } from './siren';
+import { settings, volumeGain } from '../settings';
 
 export { AUDIO_SAMPLE_RATE };
 
@@ -34,17 +35,17 @@ const FULL_SCALE_DB = 100;
 /** Geometry (distance, delay, gain, filter) is computed this often and interpolated per sample. */
 const CONTROL_STEP_S = 0.01;
 
-// ---- Distance colouring. Tune here. ----
-/** Low-pass cutoff by distance: ~10 kHz up close, 3.7 kHz at 100 m, 1.5 kHz at 300 m, 650 Hz at 700 m. */
-const lowpassHz = (d: number) => 16000 / (1 + d / 30);
-/** Reverb starts this far away... */
-const REVERB_START_M = 80;
-/** ...and is fully mixed in here. */
-const REVERB_FULL_M = 250;
-/** Reverb send level when fully mixed in. */
-const REVERB_SEND = 0.9;
-/** How much the direct sound drops when the reverb is fully in (0 = not at all). */
-const REVERB_DRY_DUCK = 0.5;
+// ---- Distance colouring. Tuned in the settings (Sound propagation). ----
+/**
+ * Low-pass cutoff by distance. With the default muffling distance of 30 m:
+ * ~10 kHz up close, 3.7 kHz at 100 m, 1.5 kHz at 300 m, 650 Hz at 700 m.
+ */
+const lowpassHz = (d: number) => 16000 / (1 + d / settings.propagation.muffleM);
+/** Reverb starts at reverbStartM and is fully mixed in at reverbFullM (kept at least 1 m apart). */
+function reverbSpan() {
+  const { reverbStartM, reverbFullM } = settings.propagation;
+  return { start: reverbStartM, len: Math.max(1, reverbFullM - reverbStartM) };
+}
 
 // ---- Traffic bed ----
 /** Level outside the noise map's coverage. */
@@ -80,6 +81,8 @@ interface ControlPoint {
 
 function controlPoints(src: SoundSource, listener: Track, n: number): ControlPoint[] {
   const range = hearingRange(src);
+  const volume = volumeGain(src.kind);
+  const reverb = reverbSpan();
   const pts: ControlPoint[] = [];
   for (let k = 0; k < n; k++) {
     const t = k * CONTROL_STEP_S;
@@ -87,9 +90,9 @@ function controlPoints(src: SoundSource, listener: Track, n: number): ControlPoi
     const gain = isActive(src, te) ? distanceGainDb(d, range) : null;
     pts.push({
       tau: tau - src.start,
-      amp: gain === null ? 0 : dbToAmp(src.levelDb + gain - FULL_SCALE_DB),
+      amp: gain === null ? 0 : volume * dbToAmp(src.levelDb + gain - FULL_SCALE_DB),
       cutoff: lowpassHz(d),
-      wet: smoothstep((d - REVERB_START_M) / (REVERB_FULL_M - REVERB_START_M)),
+      wet: smoothstep((d - reverb.start) / reverb.len),
     });
   }
   return pts;
@@ -112,6 +115,8 @@ function renderSource(
   if (!ctrl.some((c) => c.amp > 0)) return; // never in range
 
   const lp = new Lowpass();
+  const send = settings.propagation.reverbPct / 100; // reverb send when fully mixed in
+  const duck = settings.propagation.reverbDuckPct / 100; // dry drop when fully mixed in
   const perCtrl = AUDIO_SAMPLE_RATE * CONTROL_STEP_S;
 
   for (let k = 0; k < nCtrl - 1; k++) {
@@ -132,8 +137,8 @@ function renderSource(
       const x = amp * lp.process(voice.next(tau, dt));
       if (reverb) {
         const wet = a.wet + (b.wet - a.wet) * f;
-        out[i] += x * (1 - REVERB_DRY_DUCK * wet);
-        bus[i] += x * wet * REVERB_SEND;
+        out[i] += x * (1 - duck * wet);
+        bus[i] += x * wet * send;
       } else {
         out[i] += x;
       }
@@ -148,7 +153,7 @@ function addTrafficBed(out: Float32Array, listener: Track, assets: AudioAssets) 
   for (let k = 0; k < n; k++) {
     const p = positionAt(listener, k * TRAFFIC_STEP_S);
     const db = assets.noiseMap?.levelAround(p, TRAFFIC_RADIUS_M) ?? TRAFFIC_DEFAULT_DB;
-    amps.push(dbToAmp(db + TRAFFIC_OFFSET_DB - FULL_SCALE_DB));
+    amps.push(volumeGain('traffic') * dbToAmp(db + TRAFFIC_OFFSET_DB - FULL_SCALE_DB));
   }
   const voice = new LoopVoice(assets.samples.traffic);
   const per = AUDIO_SAMPLE_RATE * TRAFFIC_STEP_S;
@@ -160,9 +165,9 @@ function addTrafficBed(out: Float32Array, listener: Track, assets: AudioAssets) 
   }
 }
 
-/** City background recording at a constant level, always audible. No distance processing. */
+/** City background recording at a constant level (times its volume setting). No distance processing. */
 function addCityBackground(out: Float32Array, assets: AudioAssets, seed: number) {
-  const amp = dbToAmp(CITY_BACKGROUND_DB - FULL_SCALE_DB);
+  const amp = volumeGain('city') * dbToAmp(CITY_BACKGROUND_DB - FULL_SCALE_DB);
   const voice = new LoopVoice(assets.samples.city, cityOffsetS(seed));
   for (let i = 0; i < out.length; i++) out[i] += amp * voice.next(i / AUDIO_SAMPLE_RATE);
 }
@@ -179,7 +184,7 @@ export function renderListenerAudio(
 
   sources.forEach((src, i) => {
     const spec = VOICES[src.kind];
-    if (!spec) return;
+    if (!spec || src.silent) return;
     const offset = voiceOffsetS(seed, i);
     const voice: Voice = !spec.sample
       ? new SirenVoice(offset)
