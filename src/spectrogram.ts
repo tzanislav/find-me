@@ -179,6 +179,30 @@ export class SpectrogramView {
     this.setView(0, CLIP_SECONDS, 0, 1);
   }
 
+  /** The plot and its two axes, in client (viewport) coordinates. */
+  areas(): { plot: DOMRect; timeAxis: DOMRect; freqAxis: DOMRect } {
+    const r = this.canvas.getBoundingClientRect();
+    const pw = Math.max(0, this.plotW);
+    const ph = Math.max(0, this.plotH);
+    return {
+      plot: new DOMRect(r.left + PAD.left, r.top + PAD.top, pw, ph),
+      timeAxis: new DOMRect(r.left + PAD.left, r.top + PAD.top + ph, pw, PAD.bottom),
+      freqAxis: new DOMRect(r.left, r.top + PAD.top, PAD.left, ph),
+    };
+  }
+
+  /** Where the time span [a, b] s is drawn, in client coordinates, clipped to the view; null when out of view. */
+  rangeRect(a: number, b: number): DOMRect | null {
+    const lo = Math.max(a, this.t0);
+    const hi = Math.min(b, this.t1);
+    if (hi <= lo) return null;
+    const { plot } = this.areas();
+    const x0 = plot.left + this.xOf(lo) - PAD.left;
+    const x1 = plot.left + this.xOf(hi) - PAD.left;
+    const w = Math.max(6, x1 - x0); // still visible when zoomed far out
+    return new DOMRect((x0 + x1) / 2 - w / 2, plot.top, w, plot.height);
+  }
+
   /** Axis height (0 at 0 Hz, 1 at MAX_HZ) of a frequency. */
   private nOfHz(f: number) {
     return this.log ? Math.log1p(f / LOG_KNEE_HZ) / Math.log1p(MAX_HZ / LOG_KNEE_HZ) : f / MAX_HZ;

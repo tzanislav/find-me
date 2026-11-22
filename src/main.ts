@@ -37,6 +37,7 @@ import { holdingIn } from './hold';
 import { TitleScreen } from './title';
 import { randomSeed } from './rng';
 import { onSettingsChange, settings, updateSettings } from './settings';
+import { TUTORIAL_SEED, Tutorial } from './tutorial';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -60,6 +61,8 @@ const revealedPeds = new Set<number>();
 const markedPeds = new Set<number>();
 /** Set once the player arrests someone; the round is over. */
 let arrested: Pedestrian | null = null;
+/** Whether the current round is the tutorial's (Try again then replays the tutorial). */
+let tutorialRound = false;
 
 const ll = (v: Vec): L.LatLngExpression => {
   const p = toLatLng(v);
@@ -503,10 +506,11 @@ copySeedBtn.addEventListener('click', async () => {
 });
 
 $('btn-mission-hide').addEventListener('click', () => showMission(null));
-$('btn-mission-retry').addEventListener('click', () => void newRound());
+$('btn-mission-retry').addEventListener('click', () => void (tutorialRound ? startTutorial() : newRound()));
 $('btn-mission-menu').addEventListener('click', () => {
   setPlaying(false);
   showMission(null);
+  tutorialGuide.stop();
   title.show();
 });
 
@@ -515,11 +519,15 @@ const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() 
 
 let building = false;
 
-/** Deals the round for `seed`; the same seed always gives the same round. */
-async function newRound(seed = randomSeed()) {
-  if (!world || building) return;
+/**
+ * Deals the round for `seed`; the same seed always gives the same round.
+ * `tutorial` marks it as the tutorial's round. Returns false if a round was already being built.
+ */
+async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean> {
+  if (!world || building) return false;
   building = true;
   setPlaying(false);
+  if (!tutorial) tutorialGuide.stop();
   try {
     const minutes = Math.round(CLIP_SECONDS / 60);
     const step = async (status: string) => {
@@ -544,6 +552,7 @@ async function newRound(seed = randomSeed()) {
     }
 
     round = next;
+    tutorialRound = tutorial;
     arrested = null;
     revealedPeds.clear();
     markedPeds.clear();
@@ -565,6 +574,7 @@ async function newRound(seed = randomSeed()) {
     if (audio) player.setSamples(audio);
     showIntel(); // public sources (churches) are known from the start; also syncs time to 0
     console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
+    return true;
   } finally {
     building = false;
     setLoading(null);
@@ -695,6 +705,7 @@ $('btn-zoom-fit').addEventListener('click', () => spectro.resetZoom());
 
 window.addEventListener('keydown', (e) => {
   if (title.visible) return; // game hotkeys are off on the title screen
+  if (tutorialGuide.blocking) return; // and while a tutorial step explains the screen
   if ((e.target as HTMLElement).tagName === 'SELECT') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser zoom shortcuts alone
   if (e.code === 'Space') {
@@ -727,7 +738,7 @@ const sampleData = loadSamples().catch((err) => {
   return null;
 });
 
-async function boot(seed: number) {
+async function boot(seed: number, tutorial = false): Promise<boolean> {
   setLoading('Loading map data');
   const osm = await osmData;
   setLoading('Loading sounds');
@@ -747,27 +758,53 @@ async function boot(seed: number) {
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,
   );
-  await newRound(seed);
+  return newRound(seed, tutorial);
 }
 
 let booted = false;
 
-/**
- * The intro's Start button: the first time loads everything, after that it deals a fresh round.
- * Uses the seed typed on the title screen, or a random one if the field is empty.
- */
-function startGame() {
-  const seed = title.seed ?? randomSeed();
-  if (booted) {
-    void newRound(seed);
-    return;
-  }
+/** The first call loads everything, after that it only deals the round. Resolves true once the round is up. */
+async function play(seed: number, tutorial = false): Promise<boolean> {
+  if (booted) return newRound(seed, tutorial);
   booted = true;
-  boot(seed).catch((err) => {
+  try {
+    return await boot(seed, tutorial);
+  } catch (err) {
     console.error(err);
     $('result').textContent = 'Failed to load map data. See console.';
     setLoading('Failed to load. See console.');
-  });
+    return false;
+  }
 }
 
-const title = new TitleScreen(startGame);
+/**
+ * The intro's Start button. Uses the seed typed on the title screen, or a
+ * random one if the field is empty.
+ */
+function startGame() {
+  void play(title.seed ?? randomSeed());
+}
+
+// ---------- Tutorial ----------
+const tutorialGuide = new Tutorial({
+  spectro,
+  tramsUnlocked: () => unlockedKinds.has('tram'),
+  marked: () => (round ? [...markedPeds].map((i) => round!.pedestrians[i].id) : []),
+  selectedPerson: () => (round && selection?.kind === 'person' ? round.pedestrians[selection.i].id : null),
+  targetId: () => round?.target.id ?? null,
+  targetInTowerRange: () => {
+    if (!round) return false;
+    const p = positionAt(round.target, time);
+    return round.towers.some((t) => inRange(t, p));
+  },
+  targetRevealed: () => !!round && revealedPeds.has(round.pedestrians.indexOf(round.target)),
+  arrestResult: () => (round && arrested ? arrested === round.target : null),
+});
+
+/** The title's Tutorial button, and Try again after the tutorial: deals the tutorial's round, then starts the briefing. */
+async function startTutorial() {
+  tutorialGuide.stop();
+  if (await play(TUTORIAL_SEED, true)) tutorialGuide.start();
+}
+
+const title = new TitleScreen(startGame, () => void startTutorial());

@@ -683,7 +683,8 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
   color: var(--text);
   text-shadow: 0 0 6px rgba(46, 230, 255, 0.45);
 }
-.intro-text .cursor {
+.intro-text .cursor,
+.tut-text .cursor {
   display: inline-block;
   width: 0.6em;
   height: 1.1em;
@@ -693,7 +694,8 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
   box-shadow: 0 0 8px var(--cyan);
   animation: cursor-blink 1s steps(1) infinite;
 }
-.intro-text.typing .cursor { animation: none; } /* solid while typing */
+.intro-text.typing .cursor,
+.tut-text.typing .cursor { animation: none; } /* solid while typing */
 @keyframes cursor-blink {
   50% { opacity: 0; }
 }
@@ -778,3 +780,66 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
 /* Between import/export on the left and reset/close on the right */
 .settings-status { flex: 1; min-width: 0; }
 .settings-status.error { color: var(--red); }
+
+/* ---------- Tutorial (tutorial.ts) ---------- */
+/* Over the mission overlay, so the last briefing sits on the result screen; under the title screen */
+.tutorial {
+  position: fixed;
+  inset: 0;
+  z-index: 5500;
+  pointer-events: none;
+}
+.tutorial.hidden { display: none; }
+/* Catches clicks while a step explains the screen; the game behind it is shut */
+.tut-blocker { position: absolute; inset: 0; }
+.tutorial.blocking .tut-blocker { pointer-events: auto; }
+/* The hole in the dark: everything outside this box is covered by its shadow */
+.tut-spot {
+  position: fixed;
+  box-shadow: 0 0 0 200vmax rgba(2, 3, 15, 0.84);
+  transition: left 0.5s, top 0.5s, width 0.5s, height 0.5s;
+}
+.tut-frame {
+  position: fixed;
+  border: 2px solid #fff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.7), inset 0 0 10px rgba(255, 255, 255, 0.35);
+  animation: tut-pulse 1.4s ease-in-out infinite;
+}
+.tut-frame[hidden] { display: none; }
+@keyframes tut-pulse {
+  50% { border-color: rgba(255, 255, 255, 0.45); box-shadow: 0 0 4px rgba(255, 255, 255, 0.3); }
+}
+.tut-box {
+  position: fixed;
+  width: min(560px, 92vw);
+  pointer-events: auto;
+  background: rgba(4, 8, 32, 0.95);
+  border-color: var(--cyan);
+  box-shadow: 0 0 24px rgba(46, 230, 255, 0.35), inset 0 0 12px rgba(30, 70, 255, 0.15);
+  gap: 10px;
+}
+.tut-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+.tut-count { color: var(--muted); font-size: 12px; }
+/* The invisible full text and the typed text share one grid cell, so the box is sized for the whole text from the start */
+.tut-text {
+  display: grid;
+  font-size: 15px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text);
+  text-shadow: 0 0 6px rgba(46, 230, 255, 0.45);
+  cursor: default;
+}
+.tut-text > * { grid-area: 1 / 1; }
+.tut-full { visibility: hidden; }
+.tut-actions { display: flex; justify-content: space-between; gap: 10px; }
+.tut-actions .tut-next { font-size: 13px; padding: 5px 20px; }
+.tut-actions .tut-next[hidden] { display: none; }
+.tut-actions .tut-exit { margin-right: auto; color: var(--muted); }

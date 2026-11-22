@@ -1,16 +1,17 @@
 // Title screen, credits window and the typed intro that leads into the game.
 //
-// Flow: title + [Start] [Settings] [Credits]. Start fades the buttons, then the title,
+// Flow: title + [Start] [Tutorial] [Settings] [Credits]. Start fades the buttons, then the title,
 // then types public/text/intro.txt with a cursor. A Start button appears in
 // the bottom right of the text field shortly after typing begins; it opens
-// the game straight away, whether or not the text has finished.
+// the game straight away, whether or not the text has finished. Tutorial
+// skips the intro and opens the tutorial round (tutorial.ts).
 //
 // The intro and credits are plain text files in public/text/, so they can be
 // edited without touching code or rebuilding.
 
-import { playUiSound } from './audio/ui-sounds';
 import { MAX_SEED, parseSeed } from './rng';
 import { SettingsWindow } from './settings-window';
+import { typewrite } from './typewriter';
 
 const TEXT_URL = (name: string) => `${import.meta.env.BASE_URL}text/${name}`;
 
@@ -20,20 +21,6 @@ const TITLE_FADE_MS = 2500;
 const PAUSE_BEFORE_TEXT_MS = 600;
 /** How long after typing begins the intro's Start button appears. */
 const START_BUTTON_DELAY_MS = 1500;
-
-/** Typing speed: a delay per character, plus extra pauses after punctuation. */
-const CHAR_MS = 16;
-const PAUSE_MS: Record<string, number> = { '.': 190, '!': 190, '?': 190, ',': 70, ';': 80, ':': 80, '\n': 130 };
-
-const VOWELS = /[aeiou]/i;
-
-/**
- * Sound hook: called once for every character the intro types, including
- * spaces and line breaks. Vowels beep.
- */
-function onIntroType(ch: string) {
-  if (VOWELS.test(ch)) playUiSound('beep');
-}
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -70,9 +57,21 @@ export class TitleScreen {
   /** Set while the intro is typing: finishes it at once (any click on the screen). */
   private skipTyping: (() => void) | null = null;
 
-  /** `onStart` opens the game; it runs when the intro's Start button is pressed. */
-  constructor(private readonly onStart: () => void) {
+  /**
+   * `onStart` opens the game; it runs when the intro's Start button is pressed.
+   * `onTutorial` opens the tutorial; it runs straight from the title's Tutorial button.
+   */
+  constructor(
+    private readonly onStart: () => void,
+    private readonly onTutorial: () => void,
+  ) {
     $('btn-title-start').addEventListener('click', () => void this.sequence());
+    $('btn-title-tutorial').addEventListener('click', () => {
+      this.run++;
+      this.seedInput.blur();
+      this.screen.classList.add('hidden');
+      this.onTutorial();
+    });
     // Digits only, capped at the largest seed
     this.seedInput.addEventListener('input', () => {
       const digits = this.seedInput.value.replace(/\D/g, '').slice(0, 10);
@@ -155,29 +154,14 @@ export class TitleScreen {
     this.introBox.classList.add('typing'); // solid cursor while typing, blinking when done
     const node = document.createTextNode('');
     this.typed.replaceChildren(node);
-    let skipped = false;
-    let wake: () => void = () => {};
+    // Keep the newest line in view if the text outgrows the field
+    const typing = typewrite(node, text, { live, onChar: () => (this.introBox.scrollTop = this.introBox.scrollHeight) });
     this.skipTyping = () => {
-      skipped = true;
-      wake(); // don't wait out the current character's pause
+      typing.skip();
+      this.introStart.classList.remove('gone');
     };
     try {
-      for (const ch of text) {
-        if (!live()) return;
-        if (skipped) {
-          node.data = text;
-          this.introStart.classList.remove('gone');
-          break;
-        }
-        node.appendData(ch);
-        onIntroType(ch);
-        // Keep the newest line in view if the text outgrows the field
-        this.introBox.scrollTop = this.introBox.scrollHeight;
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-          setTimeout(resolve, CHAR_MS + (PAUSE_MS[ch] ?? 0));
-        });
-      }
+      if (!(await typing.done)) return;
       this.introBox.scrollTop = this.introBox.scrollHeight;
       this.introBox.classList.remove('typing');
     } finally {
