@@ -24,6 +24,9 @@ function silhouetteSvg(sex: Profile['sex']): string {
 
 const field = (label: string, value: string) => `<dt>${label}</dt><dd>${value}</dd>`;
 
+/** Shown next to a marked person's ID in tower lists. */
+const MARK_GLYPH = '<span class="mark-glyph">◆</span>';
+
 const REDACTED = '<span class="redacted">██████</span>';
 const genderLabel = (sex: Profile['sex']) => (sex === 'female' ? 'Female' : 'Male');
 
@@ -45,7 +48,7 @@ export function targetHtml(target: Pedestrian, clues: TargetClue[]): string {
 }
 
 export interface TowerView {
-  connected: { i: number; p: Pedestrian; revealed: boolean }[];
+  connected: { i: number; p: Pedestrian; revealed: boolean; marked: boolean }[];
   revealCost: number;
   holdMs: number;
   canAfford: boolean;
@@ -54,8 +57,8 @@ export interface TowerView {
 export function towerHtml(tower: Tower, { connected, revealCost, holdMs, canAfford }: TowerView): string {
   const rows = connected
     .map(
-      ({ i, p, revealed }) =>
-        `<button class="conn-row" data-ped="${i}" title="Inspect"><span>${p.id}</span><span>${revealed ? fullName(p) : REDACTED}</span><span>${revealed ? p.phone : REDACTED}</span></button>`,
+      ({ i, p, revealed, marked }) =>
+        `<button class="conn-row${marked ? ' marked' : ''}" data-ped="${i}" title="Inspect"><span>${marked ? MARK_GLYPH : ''}${p.id}</span><span>${revealed ? fullName(p) : REDACTED}</span><span>${revealed ? p.phone : REDACTED}</span></button>`,
     )
     .join('');
   const allRevealed = connected.every((c) => c.revealed);
@@ -77,8 +80,11 @@ export function towerHtml(tower: Tower, { connected, revealCost, holdMs, canAffo
     </button>`;
 }
 
-/** A person's card. Until their data is revealed through a tower, only the ID is known. */
-export function personHtml(p: Pedestrian, revealed: boolean, canArrest: boolean, holdMs: number): string {
+/**
+ * A person's card. Until their data is revealed through a tower, only the ID is known.
+ * Marking is free and only a note for the player: it highlights them on the map.
+ */
+export function personHtml(p: Pedestrian, revealed: boolean, marked: boolean, canArrest: boolean, holdMs: number): string {
   const card = revealed
     ? `<div class="photo">${silhouetteSvg(p.profile.sex)}</div>
       <dl class="insp-fields">
@@ -94,7 +100,10 @@ export function personHtml(p: Pedestrian, revealed: boolean, canArrest: boolean,
         <div class="muted small locked-note">Data locked. Reveal it from any cell tower this person is in range of.</div>
       </div>`;
   return `
-    <div class="insp-head"><span class="legend-dot"></span><span>Person</span></div>
+    <div class="insp-head"><span class="legend-dot"></span><span>Person</span>${marked ? `<span class="mark-tag">${MARK_GLYPH}Marked</span>` : ''}</div>
     <div class="person-card">${card}</div>
-    <button data-action="arrest" data-hold="${holdMs}" class="btn-arrest" ${canArrest ? '' : 'disabled'}>Arrest</button>`;
+    <div class="row person-actions">
+      <button data-action="mark" class="btn-mark${marked ? ' on' : ''}" title="Highlight this person on the map so you can keep track of them (M)">${marked ? 'Unmark' : 'Mark'}</button>
+      <button data-action="arrest" data-hold="${holdMs}" class="btn-arrest" ${canArrest ? '' : 'disabled'}>Arrest</button>
+    </div>`;
 }

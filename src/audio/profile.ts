@@ -62,7 +62,7 @@ export function profileLoop(loop: Float32Array, oneShot = false): SampleProfile 
   const hann = Float64Array.from({ length: FFT_SIZE }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FFT_SIZE));
   const re = new Float64Array(FFT_SIZE);
   const im = new Float64Array(FFT_SIZE);
-  const fftBinHz = AUDIO_SAMPLE_RATE / FFT_SIZE;
+  const binsPerFft = AUDIO_SAMPLE_RATE / FFT_SIZE / HZ_PER_BIN;
 
   const frames: Float32Array[] = [];
   let totalPower = 0;
@@ -82,8 +82,13 @@ export function profileLoop(loop: Float32Array, oneShot = false): SampleProfile 
     for (let k = 1; k < FFT_SIZE / 2; k++) {
       const p = re[k] * re[k] + im[k] * im[k];
       totalPower += p;
-      const b = Math.floor((k * fftBinHz) / HZ_PER_BIN);
-      if (b < BINS) bins[b] += p;
+      // FFT bin k covers [lo, hi) in spectrogram bins; split its power by
+      // overlap, so bins of similar width don't come out striped
+      const lo = (k - 0.5) * binsPerFft;
+      const hi = lo + binsPerFft;
+      for (let b = Math.floor(lo); b < hi && b < BINS; b++) {
+        bins[b] += (p * (Math.min(hi, b + 1) - Math.max(lo, b))) / binsPerFft;
+      }
     }
     frames.push(bins);
   }

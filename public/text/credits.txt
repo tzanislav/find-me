@@ -10,5 +10,8 @@ Fonts
 Orbitron, SIL Open Font License
 Share Tech Mono, SIL Open Font License
 
-Music and sound effects
+Sound effects
 http://freesound.org/
+
+Music:
+

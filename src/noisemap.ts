@@ -49,34 +49,38 @@ export class NoiseMap {
     this.sin = Math.sin(tf.rotation);
   }
 
-  /** Level in dB at one point, or null outside the map. */
-  levelAt(v: Vec): number | null {
+  /**
+   * Level in dB at one point. The map doesn't cover the whole play field, so
+   * points beyond its edges wrap around to the other side: not real levels,
+   * but a plausible mix of streets for the prototype.
+   */
+  levelAt(v: Vec): number {
     const dx = (v.x - this.tf.tx) / this.tf.scale;
     const dy = (v.y - this.tf.ty) / this.tf.scale;
     const u = Math.floor(this.cos * dx + this.sin * dy);
     const w = Math.floor(this.sin * dx - this.cos * dy);
-    if (u < 0 || w < 0 || u >= this.width || w >= this.height) return null;
-    return this.db[w * this.width + u];
+    const uw = ((u % this.width) + this.width) % this.width;
+    const ww = ((w % this.height) + this.height) % this.height;
+    return this.db[ww * this.width + uw];
   }
 
   /**
    * Power average of the level over a disc around v, so a listener hears a
    * nearby boulevard before reaching it and the level doesn't jump at band
-   * edges. Null when the whole disc is outside the map.
+   * edges. Outside the map it wraps around, like levelAt.
    */
-  levelAround(v: Vec, radiusM: number, steps = 4): number | null {
+  levelAround(v: Vec, radiusM: number, steps = 4): number {
     let pow = 0;
     let n = 0;
     for (let i = -steps; i <= steps; i++) {
       for (let j = -steps; j <= steps; j++) {
         if (i * i + j * j > steps * steps) continue;
         const db = this.levelAt({ x: v.x + (i / steps) * radiusM, y: v.y + (j / steps) * radiusM });
-        if (db === null) continue;
         pow += Math.pow(10, db / 10);
         n++;
       }
     }
-    return n === 0 ? null : 10 * Math.log10(pow / n);
+    return 10 * Math.log10(pow / n);
   }
 }
 

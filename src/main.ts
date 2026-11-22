@@ -17,7 +17,8 @@ import {
   type SourceKind,
   type Track,
 } from './sources';
-import { simulate, type SpectralProfiles } from './sim';
+import { simulate, type LoopLengths, type SpectralProfiles } from './sim';
+import { AUDIO_SAMPLE_RATE } from './audio/constants';
 import { renderListenerAudio, type AudioAssets } from './audio/render';
 import { profileLoop } from './audio/profile';
 import { loadSamples } from './audio/samples';
@@ -35,6 +36,7 @@ import { emptyHtml, fullName, personHtml, targetHtml, towerHtml } from './inspec
 import { holdingIn } from './hold';
 import { TitleScreen } from './title';
 import { randomSeed } from './rng';
+import { onSettingsChange, settings, updateSettings } from './settings';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -43,6 +45,8 @@ let world: World | null = null;
 let audioAssets: AudioAssets | null = null;
 /** Recorded sources the spectrogram draws from their actual recording. */
 let spectralProfiles: SpectralProfiles = {};
+/** Loop lengths of recordings whose spectrogram is hand-drawn in step with them (police wail). */
+let loopLengths: LoopLengths = {};
 let round: Round | null = null;
 let time = 0;
 let playing = false;
@@ -52,6 +56,8 @@ type Selection = { kind: 'tower'; i: number } | { kind: 'person'; i: number } | 
 let selection: Selection = null;
 /** People whose data (name, number, profile) a tower has revealed. Indices into round.pedestrians. */
 const revealedPeds = new Set<number>();
+/** People the player has marked to keep track of. Indices into round.pedestrians. */
+const markedPeds = new Set<number>();
 /** Set once the player arrests someone; the round is over. */
 let arrested: Pedestrian | null = null;
 
@@ -233,6 +239,7 @@ function renderEnergy() {
     btn.classList.toggle('owned', owned);
     btn.querySelector('.cost')!.textContent = owned ? 'Acquired' : String(intel.cost);
   });
+  $('siren-note').hidden = !(unlockedKinds.has('police') || unlockedKinds.has('ambulance'));
 }
 
 renderEnergy();
@@ -337,6 +344,7 @@ function syncMarkerClasses() {
     const p = pedestrians[i];
     el.classList.toggle('selected', (selection?.kind === 'person' && selection.i === i) || p === arrested);
     el.classList.toggle('target', arrested !== null && p === target);
+    el.classList.toggle('marked', markedPeds.has(i));
   });
   towerMarkers.forEach((m, i) => m.getElement()?.classList.toggle('selected', selection?.kind === 'tower' && selection.i === i));
 }
@@ -355,9 +363,10 @@ function renderInspector(force = false) {
   }
   if (selection.kind === 'person') {
     const revealed = revealedPeds.has(selection.i);
-    const key = `p${selection.i}:${revealed}:${arrested !== null}`;
+    const marked = markedPeds.has(selection.i);
+    const key = `p${selection.i}:${revealed}:${marked}:${arrested !== null}`;
     if (!force && key === inspectorKey) return;
-    inspectorEl.innerHTML = personHtml(round.pedestrians[selection.i], revealed, arrested === null, ARREST_HOLD_MS);
+    inspectorEl.innerHTML = personHtml(round.pedestrians[selection.i], revealed, marked, arrested === null, ARREST_HOLD_MS);
     inspectorKey = key;
     return;
   }
@@ -370,7 +379,7 @@ function renderInspector(force = false) {
   const sameTower = inspectorKey.startsWith(`t${selection.i}:`);
   const scroll = inspectorEl.querySelector('.conn-list')?.scrollTop ?? 0;
   inspectorEl.innerHTML = towerHtml(round.towers[selection.i], {
-    connected: connected.map((i) => ({ i, p: round!.pedestrians[i], revealed: revealedPeds.has(i) })),
+    connected: connected.map((i) => ({ i, p: round!.pedestrians[i], revealed: revealedPeds.has(i), marked: markedPeds.has(i) })),
     revealCost: REVEAL_DATA_COST,
     holdMs: INTEL_HOLD_MS,
     canAfford,
@@ -391,10 +400,22 @@ function select(sel: Selection) {
   renderInspector(true);
 }
 
+/** Marks or unmarks a person: a free note for the player that highlights them on the map. */
+function toggleMark(i: number) {
+  if (!round) return;
+  const marked = !markedPeds.delete(i);
+  if (marked) markedPeds.add(i);
+  // Marked people sit above the crowd so they don't vanish in a cluster
+  pedMarkers[i].setZIndexOffset(marked ? 300 : 0);
+  syncMarkerClasses();
+  renderInspector(true);
+}
+
 inspectorEl.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-action], [data-ped]');
   if (!el || !round) return;
   if (el.dataset.ped !== undefined) select({ kind: 'person', i: Number(el.dataset.ped) });
+  else if (el.dataset.action === 'mark' && selection?.kind === 'person') toggleMark(selection.i);
 });
 // Hold-to-confirm actions (see hold.ts): revealing user data costs energy, arresting is free
 inspectorEl.addEventListener('hold', (e) => {
@@ -418,15 +439,28 @@ $('legend').innerHTML =
     .map((k) => `<div class="legend-item" style="color:${KINDS[k].color}">${iconSvg(k, 18)}<span>${KINDS[k].label}</span></div>`)
     .join('') +
   `<div class="legend-item" style="color:${TOWER_COLOR}">${towerIconSvg(18)}<span>Cell tower</span></div>` +
-  '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>';
+  '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>' +
+  '<div class="legend-item mark-legend"><span class="mark-glyph">◆</span><span>Marked</span></div>';
 
 // Field guide: Doppler toy and reference sirens, for learning to read the spectrogram
 new FieldGuide($('guide'));
 
 // ---------- Spectrogram ----------
-const spectro = new SpectrogramView($<HTMLCanvasElement>('spectro'), (t) => {
-  setPlaying(false);
-  setTime(t);
+const spectro = new SpectrogramView(
+  $<HTMLCanvasElement>('spectro'),
+  (t) => {
+    setPlaying(false);
+    setTime(t);
+  },
+  settings.display.logFrequency,
+);
+const logToggle = $<HTMLInputElement>('toggle-log-freq');
+logToggle.checked = settings.display.logFrequency;
+logToggle.addEventListener('change', () => updateSettings((s) => (s.display.logFrequency = logToggle.checked)));
+// Also follows a settings reset or import
+onSettingsChange(() => {
+  logToggle.checked = settings.display.logFrequency;
+  spectro.setLogFrequency(settings.display.logFrequency);
 });
 
 // ---------- Rounds ----------
@@ -502,7 +536,7 @@ async function newRound(seed = randomSeed()) {
     await step('Generating traffic and people');
     const next = timed('Round generated', () => generateRound(world!, seed));
     await step(`Simulating ${minutes} minutes of city sound`);
-    const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles));
+    const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles, loopLengths, audioAssets?.noiseMap ?? null));
     let audio: Float32Array | null = null;
     if (audioAssets) {
       await step('Rendering the recording');
@@ -512,6 +546,7 @@ async function newRound(seed = randomSeed()) {
     round = next;
     arrested = null;
     revealedPeds.clear();
+    markedPeds.clear();
     unlockedKinds.clear();
     energy = START_ENERGY;
     renderEnergy();
@@ -667,6 +702,8 @@ window.addEventListener('keydown', (e) => {
     setPlaying(!playing);
   } else if (e.key.toLowerCase() === 't') {
     addTag();
+  } else if (e.key.toLowerCase() === 'm' && selection?.kind === 'person') {
+    toggleMark(selection.i);
   } else if (e.key === '+' || e.key === '=') {
     spectro.zoomIn();
   } else if (e.key === '-') {
@@ -702,8 +739,10 @@ async function boot(seed: number) {
     spectralProfiles = {
       construction: profileLoop(bank.construction),
       city: profileLoop(bank.city),
+      traffic: profileLoop(bank.traffic),
       bell: profileLoop(bank.bell, true),
     };
+    loopLengths = { police: bank.police.length / AUDIO_SAMPLE_RATE };
   }
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,

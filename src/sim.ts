@@ -5,16 +5,24 @@
 import type { Vec } from './geo';
 import { mulberry32 } from './rng';
 import { AMBULANCE_SIREN, wailHz, yelpHz } from './audio/siren';
-import { CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from './audio/constants';
+import { CITY_BACKGROUND_DB, cityOffsetS, trafficDb, voiceOffsetS } from './audio/constants';
+import type { NoiseMap } from './noisemap';
 import type { SampleProfile } from './audio/profile';
 import { CLIP_SECONDS, isActive, positionAt, type SoundSource, type SourceKind, type Track } from './sources';
-import { settings, volumeDb } from './settings';
+import { settings, visualDb, volumeDb, type VisualKey } from './settings';
 
 export const COLS_PER_SEC = 10;
 export const COLS = CLIP_SECONDS * COLS_PER_SEC;
-export const BINS = 160;
+/** 7.8 Hz bins: about as fine as the recordings' analysis resolves (see profile.ts). */
+export const BINS = 640;
 export const MAX_HZ = 5000;
 export const HZ_PER_BIN = MAX_HZ / BINS;
+/**
+ * Bin width the recorded sources' levels were tuned at. A recording's power is
+ * shared across bins, so narrower bins would each get less of it; this keeps
+ * their brightness the same against the synthetic sources, which are set per bin.
+ */
+const PROFILE_REF_HZ = 31.25;
 
 const SPEED_OF_SOUND = 343;
 /** Crude high-frequency loss with distance, dB per kHz per km. Settings: Sound propagation. */
@@ -63,12 +71,19 @@ export interface Spectrogram {
 interface Emit {
   tone(freq: number, db: number, widthHz?: number): void;
   band(fLo: number, fHi: number, db: number, tiltDbPerOctave?: number): void;
+  /**
+   * Noise between fLo and fHi with `db` of power in total (scaled like a
+   * recording's spectrum, so brightness matches the recorded sources), spread
+   * by `shape` (relative dB at a frequency, before Doppler). Each bin gets the
+   * random speckle of a real noise spectrogram, so it reads as texture, not a blob.
+   */
+  noise(fLo: number, fHi: number, db: number, shape: (hz: number) => number, dop?: number): void;
   /** A recording's per-bin power shares, scaled to `db` in total and pitch-shifted by `dop`. */
   spectrum(shares: Float32Array, db: number, dop: number): void;
 }
 
 /** Spectral profiles of recorded sources. A kind listed here is drawn from its recording. */
-export type SpectralProfiles = Partial<Record<SourceKind | 'city', SampleProfile>>;
+export type SpectralProfiles = Partial<Record<SourceKind | 'city' | 'traffic', SampleProfile>>;
 
 /**
  * The profile frame playing at source time `lt`, matching LoopVoice and
@@ -115,8 +130,34 @@ export function propagate(src: SoundSource, listener: Vec, t: number) {
   return { te, tau, d, doppler };
 }
 
-/** Placeholder spectral shapes per source type. `lt` is time since the source started. */
-function signature(kind: SourceKind, lt: number, dop: number, L: number, e: Emit, rnd: () => number) {
+/** Loop lengths in seconds of the recordings that play for kinds drawn by `signature`. */
+export type LoopLengths = Partial<Record<SourceKind, number>>;
+
+/**
+ * Pitch of the police wail at a position in police-siren.mp3, measured from
+ * the recording: 590 to 1175 Hz and back every 3 s, even steps in log pitch,
+ * lowest at 2.8 s.
+ */
+function policeWailHz(pos: number): number {
+  const c = ((((pos - 2.8) % 3) + 3) % 3) / 3;
+  const u = c < 0.5 ? 2 * c : 2 - 2 * c;
+  return 590 * Math.pow(1175 / 590, u);
+}
+/** Fundamental and harmonics of the police wail, dB relative to the fundamental. */
+const POLICE_HARMONICS_DB = [0, -14, -20, -26];
+
+/** Long-term spectrum of airplane.mp3, relative dB. */
+function airplaneShapeDb(hz: number): number {
+  if (hz <= 125) return -3 * Math.log2(125 / hz);
+  return -3.4 * Math.log2(Math.min(hz, 250) / 125) - 10 * Math.log2(Math.max(hz, 250) / 250);
+}
+
+/**
+ * Hand-made spectral shapes per source type, modelled on their recordings.
+ * `lt` is time since the source started; `loopPos` is where in its recording
+ * the audio is (lt when there is no loop length).
+ */
+function signature(kind: SourceKind, lt: number, loopPos: number, dop: number, L: number, e: Emit, rnd: () => number) {
   switch (kind) {
     case 'ambulance': {
       // Dual-tone siren from audio/siren.ts, the same curves the audio uses.
@@ -137,15 +178,25 @@ function signature(kind: SourceKind, lt: number, dop: number, L: number, e: Emit
       break;
     }
     case 'police': {
-      // Hi-lo two tone
-      const f = Math.floor(lt / 0.6) % 2 === 0 ? 700 : 950;
-      e.tone(f * dop, L);
-      e.tone(2 * f * dop, L - 9);
-      e.tone(3 * f * dop, L - 18);
+      // Wail traced from police-siren.mp3, in step with the loop that plays.
+      // Sampled across the column like the ambulance, since the sweep is fast.
+      const SUB = 4;
+      const each = L - 10 * Math.log10(SUB);
+      for (let k = 0; k < SUB; k++) {
+        const f = policeWailHz(loopPos + ((k + 0.5) / SUB - 0.5) / COLS_PER_SEC);
+        POLICE_HARMONICS_DB.forEach((h, n) => e.tone((n + 1) * f * dop, each + h));
+      }
+      // Engine and road haze hugging the fundamental, and a faint broadband floor
+      const f0 = policeWailHz(loopPos);
+      e.noise(f0 * 0.55, f0 * 1.8, L - 12, (hz) => -4.34 * (Math.log2(hz / f0) / 0.25) ** 2, dop);
+      e.noise(80, MAX_HZ, L - 22, (hz) => -2 * Math.log2(hz / 80), dop);
       break;
     }
     case 'airplane': {
-      e.band(50, 2500, L - 12, -4);
+      // Jet rumble shaped like airplane.mp3: peaks near 125 Hz, falls ~10 dB
+      // per octave above 250 Hz, and is steady from moment to moment.
+      e.noise(30, MAX_HZ, L + (rnd() - 0.5) * 3, airplaneShapeDb, dop);
+      // The engine tones carry the Doppler curve
       e.tone(110 * dop, L - 6, 40);
       e.tone(2300 * dop, L - 20, 25);
       break;
@@ -164,20 +215,39 @@ function signature(kind: SourceKind, lt: number, dop: number, L: number, e: Emit
       break;
     }
     case 'tram': {
-      e.band(30, 450, L - 4, -6);
-      if (lt > 30 && lt < 34) e.tone(3200 * dop, L - 6, 60); // wheel screech in a curve
+      // Rolling noise shaped like tram.mp3 (flat to 125 Hz, then ~4.5 dB per
+      // octave down), lurching by several dB from moment to moment...
+      e.noise(30, MAX_HZ, L + (rnd() - 0.5) * 9, (hz) => -4.5 * Math.log2(Math.max(hz, 125) / 125), dop);
+      // ...and wheels knocking over rail joints: brief broadband streaks that
+      // reach high up the spectrum, about two a second.
+      if (rnd() < 0.2) e.noise(80, MAX_HZ, L - 3 + rnd() * 5, (hz) => -1.5 * Math.log2(hz / 80), dop);
       break;
     }
   }
 }
 
+/** A sound's volume setting plus its visual multiplier, in dB; null when muted or hidden. */
+function drawnDb(k: VisualKey): number | null {
+  const vol = volumeDb(k);
+  const vis = visualDb(k);
+  return vol === null || vis === null ? null : vol + vis;
+}
+
 /** Spectrogram of what `listener` hears while moving along its track. */
-export function simulate(sources: SoundSource[], listener: Track, seed = 1, profiles: SpectralProfiles = {}): Spectrogram {
+export function simulate(
+  sources: SoundSource[],
+  listener: Track,
+  seed = 1,
+  profiles: SpectralProfiles = {},
+  loops: LoopLengths = {},
+  noiseMap: NoiseMap | null = null,
+): Spectrogram {
   const rnd = mulberry32(seed);
   const pow = new Float32Array(COLS * BINS);
+  const noiseWeights = new Float32Array(BINS);
   const absorb = airAbsorption();
-  // Per-kind volume settings in dB; null = muted, left out of the picture
-  const volumes = Object.fromEntries(sources.map((s) => [s.kind, volumeDb(s.kind)])) as Record<SourceKind, number | null>;
+  // Per-kind volume plus visual multiplier in dB; null = muted or hidden, left out of the picture
+  const volumes = Object.fromEntries(sources.map((s) => [s.kind, drawnDb(s.kind)])) as Record<SourceKind, number | null>;
 
   for (let col = 0; col < COLS; col++) {
     const t = col / COLS_PER_SEC;
@@ -206,8 +276,25 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1, prof
           pow[base + b] += dbToPow(level);
         }
       },
+      noise(fLo, fHi, db, shape, dop = 1) {
+        const lo = Math.max(0, Math.floor((fLo * dop) / HZ_PER_BIN));
+        const hi = Math.min(BINS - 1, Math.ceil((fHi * dop) / HZ_PER_BIN));
+        if (hi < lo) return;
+        const w = noiseWeights;
+        let sum = 0;
+        for (let b = lo; b <= hi; b++) {
+          w[b] = dbToPow(shape(((b + 0.5) * HZ_PER_BIN) / dop));
+          sum += w[b];
+        }
+        const total = (dbToPow(db) * (PROFILE_REF_HZ / HZ_PER_BIN)) / sum;
+        for (let b = lo; b <= hi; b++) {
+          const fb = (b + 0.5) * HZ_PER_BIN;
+          const speckle = -Math.log(1 - rnd()); // noise power per bin is exponentially distributed
+          pow[base + b] += total * w[b] * speckle * dbToPow(-absorbPerKhz * (fb / 1000));
+        }
+      },
       spectrum(shares, db, dop) {
-        const total = dbToPow(db);
+        const total = dbToPow(db) * (PROFILE_REF_HZ / HZ_PER_BIN);
         for (let b = 0; b < BINS; b++) {
           if (shares[b] === 0) continue;
           const to = Math.round((b + 0.5) * dop - 0.5); // Doppler moves energy up or down in pitch
@@ -220,13 +307,20 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1, prof
 
     // City background: the real recording when loaded (as heard in the audio),
     // otherwise a synthetic pinkish, flickering noise floor.
-    // Scaled by the city volume setting; muted leaves it out.
-    const cityDb = volumeDb('city');
+    // Scaled by the city volume and visual multiplier; muted or hidden leaves it out.
+    const cityDb = drawnDb('city');
     if (cityDb !== null && profiles.city) {
       makeEmit(0).spectrum(profileFrame(profiles.city, t, cityOffsetS(seed))!, CITY_BACKGROUND_DB + cityDb, 1);
     } else if (cityDb !== null) {
       makeEmit(0).band(20, MAX_HZ, 40 + cityDb + (rnd() - 0.5) * 4, -3);
       for (let b = 0; b < BINS; b++) pow[base + b] *= 0.6 + 0.8 * rnd();
+    }
+
+    // Traffic bed: the traffic recording at the noise map's level where the
+    // listener is, as in the audio. Only drawn when the recording is loaded.
+    const trafficVis = drawnDb('traffic');
+    if (trafficVis !== null && profiles.traffic) {
+      makeEmit(0).spectrum(profileFrame(profiles.traffic, t, 0)!, trafficDb(noiseMap, here) + trafficVis, 1);
     }
 
     sources.forEach((src, i) => {
@@ -242,7 +336,12 @@ export function simulate(sources: SoundSource[], listener: Track, seed = 1, prof
       if (profile) {
         const frame = profileFrame(profile, tau - src.start, voiceOffsetS(seed, i));
         if (frame) emit.spectrum(frame, received, doppler);
-      } else signature(src.kind, tau - src.start, doppler, received, emit, rnd);
+      } else {
+        const loopS = loops[src.kind];
+        const lt = tau - src.start;
+        const loopPos = loopS ? (((lt + voiceOffsetS(seed, i)) % loopS) + loopS) % loopS : lt;
+        signature(src.kind, lt, loopPos, doppler, received, emit, rnd);
+      }
     });
   }
 

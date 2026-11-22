@@ -18,6 +18,11 @@ export const VOLUME_KEYS = [
 ] as const;
 export type VolumeKey = (typeof VOLUME_KEYS)[number];
 
+/** Sounds drawn in the spectrogram, each with a visual multiplier beside its volume. */
+export const VISUAL_KEYS = ['ambulance', 'police', 'tram', 'airplane', 'construction', 'bell', 'traffic', 'city'] as const;
+export type VisualKey = (typeof VISUAL_KEYS)[number];
+export const isVisualKey = (k: string): k is VisualKey => (VISUAL_KEYS as readonly string[]).includes(k);
+
 /** A [min, max] count; each round picks a number in between. */
 export type CountRange = [number, number];
 
@@ -35,6 +40,11 @@ export interface SirenFleet {
 export interface Settings {
   /** 0..100 % of the normal level. */
   volume: Record<VolumeKey, number>;
+  /**
+   * How bright each sound is drawn in the spectrogram, as an amplitude factor
+   * on top of its volume (2 = +6 dB, 0 = not drawn). The audio is unaffected.
+   */
+  visual: Record<VisualKey, number>;
   propagation: {
     /** How far a pedestrian can hear ground sources, m. */
     hearingRangeM: number;
@@ -64,10 +74,15 @@ export interface Settings {
     airplane: CountRange;
     construction: CountRange;
   };
+  display: {
+    /** Spectrogram frequency axis on a log scale, so low pitches get more room. */
+    logFrequency: boolean;
+  };
 }
 
 export const DEFAULTS: Settings = {
   volume: Object.fromEntries(VOLUME_KEYS.map((k) => [k, 100])) as Record<VolumeKey, number>,
+  visual: Object.fromEntries(VISUAL_KEYS.map((k) => [k, 1])) as Record<VisualKey, number>,
   propagation: {
     hearingRangeM: 300,
     airplaneRangeM: 3000,
@@ -86,6 +101,9 @@ export const DEFAULTS: Settings = {
     police: { total: 6, minActive: 2, maxActive: 5 },
     airplane: [2, 3],
     construction: [2, 3],
+  },
+  display: {
+    logFrequency: true,
   },
 };
 
@@ -108,6 +126,7 @@ export const PROPAGATION_LIMITS: Record<keyof Settings['propagation'], Limits> =
   reverbDuckPct: { min: 0, max: 100, step: 5 },
 };
 export const VOLUME_LIMITS: Limits = { min: 0, max: 100, step: 1 };
+export const VISUAL_LIMITS: Limits = { min: 0, max: 10, step: 0.1 };
 /**
  * Count limits. Airplanes stop at 5: passes are kept 100 s apart inside the
  * clip's middle 8 minutes, so more would not fit. Construction sites are kept
@@ -150,6 +169,7 @@ function sanitize(raw: unknown): Settings {
   const r = (raw ?? {}) as Partial<Record<keyof Settings, Record<string, unknown>>>;
   const out = structuredClone(DEFAULTS);
   for (const k of VOLUME_KEYS) out.volume[k] = clamp(r.volume?.[k], VOLUME_LIMITS, DEFAULTS.volume[k]);
+  for (const k of VISUAL_KEYS) out.visual[k] = clamp(r.visual?.[k], VISUAL_LIMITS, DEFAULTS.visual[k]);
   for (const k of Object.keys(PROPAGATION_LIMITS) as (keyof Settings['propagation'])[]) {
     out.propagation[k] = clamp(r.propagation?.[k], PROPAGATION_LIMITS[k], DEFAULTS.propagation[k]);
   }
@@ -160,6 +180,8 @@ function sanitize(raw: unknown): Settings {
   for (const k of ['airplane', 'construction'] as const) {
     out.spawn[k] = clampRange(r.spawn?.[k], SPAWN_LIMITS[k], DEFAULTS.spawn[k]);
   }
+  const logFrequency = r.display?.logFrequency;
+  if (typeof logFrequency === 'boolean') out.display.logFrequency = logFrequency;
   return out;
 }
 
@@ -231,7 +253,7 @@ export function importSettings(text: string) {
   if ('app' in obj && obj.app !== EXPORT_APP) throw new Error('The file is from a different app.');
   const body = 'settings' in obj ? obj.settings : obj;
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-  if (!('volume' in b || 'propagation' in b || 'spawn' in b)) throw new Error('The file does not contain settings.');
+  if (!('volume' in b || 'visual' in b || 'propagation' in b || 'spawn' in b || 'display' in b)) throw new Error('The file does not contain settings.');
   Object.assign(settings, sanitize(body));
   commit();
 }
@@ -242,3 +264,7 @@ export const volumeGain = (k: VolumeKey) => settings.volume[k] / 100;
 /** A volume setting in dB, or null when it is muted. */
 export const volumeDb = (k: VolumeKey): number | null =>
   settings.volume[k] > 0 ? 20 * Math.log10(settings.volume[k] / 100) : null;
+
+/** The spectrogram brightness change for a sound in dB, or null when it is not drawn. */
+export const visualDb = (k: VisualKey): number | null =>
+  settings.visual[k] > 0 ? 20 * Math.log10(settings.visual[k]) : null;

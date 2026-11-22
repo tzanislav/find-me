@@ -17,7 +17,7 @@
 import { distanceGainDb, hearingRange, propagate } from '../sim';
 import type { NoiseMap } from '../noisemap';
 import { CLIP_SECONDS, isActive, positionAt, type SoundSource, type SourceKind, type Track } from '../sources';
-import { AUDIO_SAMPLE_RATE, CITY_BACKGROUND_DB, cityOffsetS, voiceOffsetS } from './constants';
+import { AUDIO_SAMPLE_RATE, CITY_BACKGROUND_DB, cityOffsetS, trafficDb, voiceOffsetS } from './constants';
 import { Lowpass, applyReverb } from './dsp';
 import { LoopVoice, OneShotVoice, isOneShot, type SampleBank, type SampleName } from './samples';
 import { SirenVoice } from './siren';
@@ -27,7 +27,7 @@ export { AUDIO_SAMPLE_RATE };
 
 export interface AudioAssets {
   samples: SampleBank;
-  noiseMap: NoiseMap | null; // null if it failed to load; the bed then uses TRAFFIC_DEFAULT_DB
+  noiseMap: NoiseMap | null; // null if it failed to load; the bed then uses a flat level (constants.ts)
 }
 
 /** Received level that maps to digital full scale. A siren 10 m away is ~100 dB. */
@@ -48,12 +48,6 @@ function reverbSpan() {
 }
 
 // ---- Traffic bed ----
-/** Level outside the noise map's coverage. */
-const TRAFFIC_DEFAULT_DB = 50;
-/** The bed averages the noise map over this radius around the listener. */
-const TRAFFIC_RADIUS_M = 25;
-/** The noise map gives day-evening-night averages; shift them to taste. */
-const TRAFFIC_OFFSET_DB = 0;
 const TRAFFIC_STEP_S = 0.25;
 
 /** How each kind is voiced. Kinds not listed are silent for now. */
@@ -152,8 +146,7 @@ function addTrafficBed(out: Float32Array, listener: Track, assets: AudioAssets) 
   const amps: number[] = [];
   for (let k = 0; k < n; k++) {
     const p = positionAt(listener, k * TRAFFIC_STEP_S);
-    const db = assets.noiseMap?.levelAround(p, TRAFFIC_RADIUS_M) ?? TRAFFIC_DEFAULT_DB;
-    amps.push(volumeGain('traffic') * dbToAmp(db + TRAFFIC_OFFSET_DB - FULL_SCALE_DB));
+    amps.push(volumeGain('traffic') * dbToAmp(trafficDb(assets.noiseMap, p) - FULL_SCALE_DB));
   }
   const voice = new LoopVoice(assets.samples.traffic);
   const per = AUDIO_SAMPLE_RATE * TRAFFIC_STEP_S;

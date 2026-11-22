@@ -4,10 +4,12 @@
 import {
   PROPAGATION_LIMITS,
   SPAWN_LIMITS,
+  VISUAL_LIMITS,
   VOLUME_KEYS,
   VOLUME_LIMITS,
   exportSettings,
   importSettings,
+  isVisualKey,
   resetSettings,
   settings,
   updateSettings,
@@ -84,6 +86,24 @@ function numberInput(l: Limits, value: number): HTMLInputElement {
   input.max = String(l.max);
   input.step = String(l.step);
   input.value = String(value);
+  return input;
+}
+
+/**
+ * The spectrogram brightness multiplier beside a volume slider. Out-of-range
+ * or empty input is clamped (empty = 1) and written back.
+ */
+function visualInput(value: number, set: (v: number) => void): HTMLInputElement {
+  const l = VISUAL_LIMITS;
+  const input = numberInput(l, value);
+  input.classList.add('settings-visual');
+  input.title = 'Visual multiplier: how bright this sound is drawn in the spectrogram. Does not change the audio.';
+  input.addEventListener('change', () => {
+    const raw = input.value.trim() === '' ? 1 : Number(input.value);
+    const v = Math.round(Math.min(l.max, Math.max(l.min, Number.isFinite(raw) ? raw : 1)) * 10) / 10;
+    input.value = fmt(v);
+    set(v);
+  });
   return input;
 }
 
@@ -183,13 +203,21 @@ export class SettingsWindow {
     };
     this.body.replaceChildren();
 
-    const vol = section('Sound levels', 'How loud each sound is in the recording. Music and interface sounds change at once; the rest from the next round.');
+    const vol = section(
+      'Sound levels',
+      'How loud each sound is in the recording. Music and interface sounds change at once; the rest from the next round. The × field is a visual multiplier: how bright that sound is drawn in the spectrogram (2 = twice as strong, 0 = hidden), without changing what you hear.',
+    );
+    const head = el('div', 'settings-row with-visual settings-colhead');
+    head.append(el('div'), el('div'), el('div'), el('div', 'muted', 'Visual ×'));
+    vol.append(head);
     for (const k of VOLUME_KEYS) {
-      vol.append(
-        sliderRow(VOLUME_LABELS[k], null, VOLUME_LIMITS, settings.volume[k], (v) => `${v}%`, (v) =>
-          updateSettings((s) => (s.volume[k] = v)),
-        ),
+      const row = sliderRow(VOLUME_LABELS[k], null, VOLUME_LIMITS, settings.volume[k], (v) => `${v}%`, (v) =>
+        updateSettings((s) => (s.volume[k] = v)),
       );
+      row.classList.add('with-visual');
+      // Only sounds drawn in the spectrogram get one; the rest keep the column empty
+      row.append(isVisualKey(k) ? visualInput(settings.visual[k], (v) => updateSettings((s) => (s.visual[k] = v))) : el('div'));
+      vol.append(row);
     }
 
     const prop = section('Sound propagation', 'How sound travels and fades with distance. Applies from the next round.');

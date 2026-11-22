@@ -7,6 +7,7 @@
   --cyan: #2ee6ff;
   --green: #45ff9c;
   --red: #ff3b5c;
+  --amber: #ffc43d;
   --text: #cfe0ff;
   --muted: #6f86c9;
   --mono: 'Share Tech Mono', ui-monospace, monospace;
@@ -39,6 +40,20 @@ html, body {
 .top-right { top: 12px; right: 12px; }
 .bottom-right { bottom: 26px; right: 12px; }
 .top-left { top: 12px; left: 12px; }
+.bottom-left { bottom: 12px; left: 12px; }
+
+/* Shown once police or ambulance data is bought */
+#siren-note {
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+}
+#siren-note[hidden] { display: none; }
+/* Keep the left panels clear of the note while it shows */
+#map-panel:has(#siren-note:not([hidden])) .left-cols { max-height: calc(100% - 24px - 38px); }
 
 /* Side columns: panels stacked, the column never runs past the map */
 .left-col,
@@ -362,6 +377,32 @@ label { text-transform: uppercase; font-size: 12px; }
   animation: pulse 1.2s ease-in-out infinite;
 }
 .ped.target .ped-dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+/* Marked by the player: amber diamond around the dot */
+.ped.marked::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid var(--amber);
+  transform: rotate(45deg) scale(0.85);
+  box-shadow: 0 0 6px var(--amber), inset 0 0 4px var(--amber);
+}
+.ped.marked .ped-dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.ped.marked.selected .ped-dot {
+  background: var(--cyan);
+  box-shadow: 0 0 6px var(--cyan);
+}
+.mark-glyph { color: var(--amber); text-shadow: 0 0 6px var(--amber); margin-right: 4px; }
+.mark-tag { margin-left: auto; color: var(--amber); font-size: 11px; text-shadow: 0 0 6px var(--amber); }
+.mark-legend { color: var(--amber); }
+.person-actions > button { flex: 1; }
+.btn-mark { border-color: var(--amber); color: var(--amber); text-shadow: 0 0 6px var(--amber); }
+.btn-mark:hover:not(:disabled) { border-color: var(--amber); color: #fff; box-shadow: 0 0 10px rgba(255, 196, 61, 0.6); }
+.btn-mark.on { background: rgba(255, 196, 61, 0.15); }
 
 .ped-name { font-family: var(--display); font-weight: 700; font-size: 11px; letter-spacing: 0.08em; color: #fff; }
 .ped-meta { color: var(--muted); font-size: 11px; }
@@ -715,6 +756,11 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
 .settings-value { text-align: right; color: #fff; text-shadow: 0 0 6px var(--cyan); white-space: nowrap; }
 .settings-pair { display: flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; }
 .settings-pair.wide { grid-column: 2 / 4; }
+/* Volume rows: an extra column for the spectrogram visual multiplier */
+.settings-row.with-visual { grid-template-columns: 1fr 200px 60px 6ch; }
+.settings-colhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: -6px; }
+.settings-colhead > :last-child { text-align: center; white-space: nowrap; }
+.settings-number.settings-visual { width: 6ch; }
 .settings-number {
   width: 5ch;
   background: rgba(10, 20, 70, 0.6);
