@@ -9,7 +9,7 @@
 // The intro and credits are plain text files in public/text/, so they can be
 // edited without touching code or rebuilding.
 
-import { MAX_SEED, parseSeed } from './rng';
+import { parseScenario, type Scenario } from './settings';
 import { SettingsWindow } from './settings-window';
 import { typewrite } from './typewriter';
 
@@ -72,10 +72,11 @@ export class TitleScreen {
       this.screen.classList.add('hidden');
       this.onTutorial();
     });
-    // Digits only, capped at the largest seed
+    // A seed, or a shared "<seed>-<code>"; marked while it isn't a valid one
     this.seedInput.addEventListener('input', () => {
-      const digits = this.seedInput.value.replace(/\D/g, '').slice(0, 10);
-      this.seedInput.value = digits && Number(digits) > MAX_SEED ? String(MAX_SEED) : digits;
+      const v = this.seedInput.value.toUpperCase().replace(/[^0-9A-Z-]/g, '');
+      if (v !== this.seedInput.value) this.seedInput.value = v;
+      this.seedInput.classList.toggle('invalid', v !== '' && !parseScenario(v));
     });
     this.seedInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') void this.sequence();
@@ -100,9 +101,9 @@ export class TitleScreen {
     });
   }
 
-  /** The seed typed on the title screen, or null for a random round. */
-  get seed(): number | null {
-    return parseSeed(this.seedInput.value);
+  /** The seed (and shared settings) typed on the title screen, or null for a random round. */
+  get scenario(): Scenario | null {
+    return parseScenario(this.seedInput.value);
   }
 
   get visible(): boolean {

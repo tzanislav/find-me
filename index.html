@@ -22,9 +22,9 @@
         <div id="intro-text" class="intro-text"><span id="intro-typed"></span><span class="cursor"></span></div>
         <div class="intro-actions"><button id="btn-intro-start" class="gone">Start</button></div>
       </div>
-      <!-- Empty = a random round; a number replays that round -->
+      <!-- Empty = a random round; a number replays that round with your settings, a shared "<seed>-<code>" with its own -->
       <label id="title-seed" class="title-seed">
-        Seed <input id="seed-input" type="text" inputmode="numeric" maxlength="10" placeholder="random" autocomplete="off" spellcheck="false" />
+        Seed <input id="seed-input" type="text" placeholder="random" autocomplete="off" spellcheck="false" />
       </label>
       <div id="credits" class="credits-backdrop hidden">
         <div class="panel credits-window">
@@ -104,6 +104,7 @@
           </div>
         </div>
         <div class="map-overlay bottom-right panel" id="legend"></div>
+        <div class="map-overlay" id="seed-label" title="Click to copy, paste on the title screen to replay"></div>
         <div class="map-overlay bottom-left" id="siren-note" hidden>Note: Not all emergency vehicles have their sirens on.</div>
       </section>
 

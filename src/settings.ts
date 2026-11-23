@@ -3,6 +3,8 @@
 // moment it needs a value, so a change applies from the next round on (music
 // and interface volumes apply at once, see onSettingsChange).
 
+import { parseSeed } from './rng';
+
 /** Sounds with their own volume slider. The first eight are mixed into the recorded clip. */
 export const VOLUME_KEYS = [
   'ambulance',
@@ -268,3 +270,102 @@ export const volumeDb = (k: VolumeKey): number | null =>
 /** The spectrogram brightness change for a sound in dB, or null when it is not drawn. */
 export const visualDb = (k: VisualKey): number | null =>
   settings.visual[k] > 0 ? 20 * Math.log10(settings.visual[k]) : null;
+
+// ---------- Scenario strings ----------
+// A round can be shared as "<seed>-<code>": the code carries every setting that
+// shapes the round (spawns, propagation, the clip's sound levels and the
+// spectrogram multipliers), so someone else gets the same round. Music, interface
+// volume and the display options stay the player's own. Not meant to be secure:
+// each setting is its slider step number in two base-36 digits, in the order
+// below, after a version digit. Never reorder the fields; add new ones at the
+// end under a new version.
+
+const SCENARIO_VERSION = '1';
+const DIGITS = 2;
+
+interface ScenarioField {
+  limits: Limits;
+  get: (s: Settings) => number;
+  set: (s: Settings, v: number) => void;
+}
+
+const PROPAGATION_ORDER: (keyof Settings['propagation'])[] = [
+  'hearingRangeM',
+  'airplaneRangeM',
+  'falloffDb',
+  'airAbsorption',
+  'doppler',
+  'muffleM',
+  'reverbStartM',
+  'reverbFullM',
+  'reverbPct',
+  'reverbDuckPct',
+];
+
+const SCENARIO_FIELDS: ScenarioField[] = [
+  ...VISUAL_KEYS.map((k) => ({ limits: VOLUME_LIMITS, get: (s: Settings) => s.volume[k], set: (s: Settings, v: number) => (s.volume[k] = v) })),
+  ...VISUAL_KEYS.map((k) => ({ limits: VISUAL_LIMITS, get: (s: Settings) => s.visual[k], set: (s: Settings, v: number) => (s.visual[k] = v) })),
+  ...PROPAGATION_ORDER.map((k) => ({
+    limits: PROPAGATION_LIMITS[k],
+    get: (s: Settings) => s.propagation[k],
+    set: (s: Settings, v: number) => (s.propagation[k] = v),
+  })),
+  { limits: SPAWN_LIMITS.pedestrians, get: (s) => s.spawn.pedestrians, set: (s, v) => (s.spawn.pedestrians = v) },
+  ...(['ambulance', 'police'] as const).flatMap((k) =>
+    (['total', 'minActive', 'maxActive'] as const).map((f) => ({
+      limits: SPAWN_LIMITS[k],
+      get: (s: Settings) => s.spawn[k][f],
+      set: (s: Settings, v: number) => (s.spawn[k][f] = v),
+    })),
+  ),
+  ...(['airplane', 'construction'] as const).flatMap((k) =>
+    [0, 1].map((i) => ({
+      limits: SPAWN_LIMITS[k],
+      get: (s: Settings) => s.spawn[k][i],
+      set: (s: Settings, v: number) => (s.spawn[k][i] = v),
+    })),
+  ),
+];
+
+const CODE_LENGTH = 1 + SCENARIO_FIELDS.length * DIGITS;
+const MAX_STEP = 36 ** DIGITS - 1;
+
+/** The live settings as a scenario code (no seed). */
+export function scenarioCode(s: Settings = settings): string {
+  const parts = SCENARIO_FIELDS.map(({ limits: l, get }) => {
+    const step = Math.min(MAX_STEP, Math.max(0, Math.round((get(s) - l.min) / l.step)));
+    return step.toString(36).padStart(DIGITS, '0');
+  });
+  return (SCENARIO_VERSION + parts.join('')).toUpperCase();
+}
+
+/** Seed plus the live settings, as shown in game and copied to share. */
+export const scenarioString = (seed: number) => `${seed}-${scenarioCode()}`;
+
+/** A change that sets the settings in `code`, or null if it isn't a valid code. */
+function decodeScenario(code: string): ((s: Settings) => void) | null {
+  const c = code.toLowerCase();
+  if (c.length !== CODE_LENGTH || c[0] !== SCENARIO_VERSION || !/^[0-9a-z]+$/.test(c)) return null;
+  const values = SCENARIO_FIELDS.map(({ limits: l }, i) => {
+    const step = parseInt(c.slice(1 + i * DIGITS, 1 + (i + 1) * DIGITS), 36);
+    return Math.round((l.min + step * l.step) * 1000) / 1000; // 0.1-steps would leave float dust
+  });
+  return (s) => SCENARIO_FIELDS.forEach((f, i) => f.set(s, values[i]));
+}
+
+export interface Scenario {
+  seed: number;
+  /** Sets the shared settings (pass to updateSettings), or null for a bare seed, which keeps the player's own. */
+  settings: ((s: Settings) => void) | null;
+}
+
+/** Splits a typed or pasted "<seed>" or "<seed>-<code>", or null if it isn't one. */
+export function parseScenario(text: string): Scenario | null {
+  const [seedText, code, ...rest] = text.trim().split('-');
+  if (rest.length) return null;
+  const seed = parseSeed(seedText);
+  if (seed === null) return null;
+  if (code === undefined) return { seed, settings: null };
+  const apply = decodeScenario(code);
+  return apply ? { seed, settings: apply } : null;
+}

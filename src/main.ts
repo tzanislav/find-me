@@ -36,7 +36,7 @@ import { emptyHtml, fullName, personHtml, targetHtml, towerHtml } from './inspec
 import { holdingIn } from './hold';
 import { TitleScreen } from './title';
 import { randomSeed } from './rng';
-import { onSettingsChange, settings, updateSettings } from './settings';
+import { onSettingsChange, scenarioString, settings, updateSettings } from './settings';
 import { TUTORIAL_SEED, Tutorial } from './tutorial';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -485,25 +485,40 @@ function showMission(success: boolean | null) {
   title.textContent = success ? 'Mission completed' : 'Mission failed';
   title.classList.toggle('ok', success);
   title.classList.toggle('fail', !success);
-  $('mission-seed-value').textContent = round ? String(round.seed) : '';
+  $('mission-seed-value').textContent = roundString;
   copySeedBtn.textContent = 'Copy seed';
 }
 
+/** The round's seed with the settings it was dealt with, to share (see scenarioString). */
+let roundString = '';
+const seedLabel = $('seed-label');
 const copySeedBtn = $<HTMLButtonElement>('btn-mission-copy-seed');
-let copyResetTimer = 0;
-copySeedBtn.addEventListener('click', async () => {
-  if (!round) return;
-  let ok = true;
-  try {
-    await navigator.clipboard.writeText(String(round.seed));
-  } catch (err) {
-    console.error('Copying the seed failed', err);
-    ok = false;
-  }
-  copySeedBtn.textContent = ok ? 'Copied' : 'Copy failed';
-  clearTimeout(copyResetTimer);
-  copyResetTimer = window.setTimeout(() => (copySeedBtn.textContent = 'Copy seed'), 1500);
-});
+
+/** Copies the round's string; `show` gets the outcome, then null after a moment to restore its label. */
+function copyRoundString(show: (copied: boolean | null) => void) {
+  let resetTimer = 0;
+  return async () => {
+    if (!roundString) return;
+    let ok = true;
+    try {
+      await navigator.clipboard.writeText(roundString);
+    } catch (err) {
+      console.error('Copying the seed failed', err);
+      ok = false;
+    }
+    show(ok);
+    clearTimeout(resetTimer);
+    resetTimer = window.setTimeout(() => show(null), 1500);
+  };
+}
+copySeedBtn.addEventListener(
+  'click',
+  copyRoundString((ok) => (copySeedBtn.textContent = ok === null ? 'Copy seed' : ok ? 'Copied' : 'Copy failed')),
+);
+seedLabel.addEventListener(
+  'click',
+  copyRoundString((ok) => (seedLabel.textContent = ok === null ? `Seed ${roundString}` : ok ? 'Seed copied' : 'Copy failed')),
+);
 
 $('btn-mission-hide').addEventListener('click', () => showMission(null));
 $('btn-mission-retry').addEventListener('click', () => void (tutorialRound ? startTutorial() : newRound()));
@@ -542,7 +557,8 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     };
 
     await step('Generating traffic and people');
-    const next = timed('Round generated', () => generateRound(world!, seed));
+    const nextString = scenarioString(seed); // the settings this round is dealt with
+    const next =timed('Round generated', () => generateRound(world!, seed));
     await step(`Simulating ${minutes} minutes of city sound`);
     const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles, loopLengths, audioAssets?.noiseMap ?? null));
     let audio: Float32Array | null = null;
@@ -552,6 +568,8 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     }
 
     round = next;
+    roundString = nextString;
+    seedLabel.textContent = `Seed ${roundString}`;
     tutorialRound = tutorial;
     arrested = null;
     revealedPeds.clear();
@@ -573,7 +591,7 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     spectro.setData(spec);
     if (audio) player.setSamples(audio);
     showIntel(); // public sources (churches) are known from the start; also syncs time to 0
-    console.info(`Round seed ${seed}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
+    console.info(`Round seed ${roundString}. ${round.pedestrians.length} pedestrians, ${round.sources.length} sources.`);
     return true;
   } finally {
     building = false;
@@ -782,7 +800,10 @@ async function play(seed: number, tutorial = false): Promise<boolean> {
  * random one if the field is empty.
  */
 function startGame() {
-  void play(title.seed ?? randomSeed());
+  const scenario = title.scenario;
+  // A shared string brings its settings along; they replace the player's own
+  if (scenario?.settings) updateSettings(scenario.settings);
+  void play(scenario?.seed ?? randomSeed());
 }
 
 // ---------- Tutorial ----------
