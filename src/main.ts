@@ -32,12 +32,22 @@ import { loadOsm } from './osm';
 import { buildWorld, generateRound, type Round, type World } from './scenario';
 import type { Pedestrian } from './pedestrians';
 import { TOWER_COLOR, TOWER_RANGE_M, inRange, towerIconSvg, type Tower } from './towers';
-import { emptyHtml, fullName, personHtml, targetHtml, towerHtml } from './inspector';
+import { emptyHtml, fullName, genderLabel, personHtml, targetHtml, towerHtml } from './inspector';
 import { holdingIn } from './hold';
 import { TitleScreen } from './title';
 import { randomSeed } from './rng';
-import { onSettingsChange, scenarioString, settings, updateSettings } from './settings';
-import { TUTORIAL_SEED, Tutorial } from './tutorial';
+import {
+  borrowSettings,
+  loadDefaultSettings,
+  onSettingsChange,
+  parseScenario,
+  restoreOwnSettings,
+  scenarioString,
+  settings,
+  updateSettings,
+} from './settings';
+import { TUTORIAL_CANDIDATES, TUTORIAL_REMOVED, TUTORIAL_SCENARIO, Tutorial, type PeopleHighlight } from './tutorial';
+import { prepareTutorialRound, type TutorialPlan } from './tutorial-round';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -49,6 +59,10 @@ let spectralProfiles: SpectralProfiles = {};
 /** Loop lengths of recordings whose spectrogram is hand-drawn in step with them (police wail). */
 let loopLengths: LoopLengths = {};
 let round: Round | null = null;
+/** The tutorial round's tram passes and decoy, null outside the tutorial. */
+let tutorialPlan: TutorialPlan | null = null;
+/** People the tutorial rings on the map right now. */
+let tutorialRing: PeopleHighlight | null = null;
 let time = 0;
 let playing = false;
 let tags: Tag[] = [];
@@ -85,6 +99,10 @@ map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap con
 
 map.createPane('basemap').style.zIndex = '150';
 map.createPane('labels').style.zIndex = '350';
+// People sit above every icon (vehicles, towers, churches: markerPane, 600) and under tooltips (650)
+map.createPane('people').style.zIndex = '640';
+// People's ID tooltips sit just under the people, so a highlight ring is never covered by a neighbour's tooltip
+map.createPane('peopleTips').style.zIndex = '630';
 
 // Dim everything outside the play area, then outline it
 L.polygon(
@@ -329,13 +347,45 @@ function buildPedestrianLayer(people: Pedestrian[]) {
   pedMarkers = people.map((p, i) =>
     L.marker(ll(positionAt(p, time)), {
       icon: L.divIcon({ className: 'ped', html: '<span class="ped-dot"></span>', iconSize: [14, 14] }),
+      pane: 'people',
       riseOnHover: true,
     })
-      .bindTooltip(p.id, { className: 'neon-tip ped-tip', direction: 'top', offset: [0, -6] })
+      .bindTooltip(p.id, { className: 'neon-tip ped-tip', direction: 'top', offset: [0, -6], pane: 'peopleTips' })
       .on('click', () => select({ kind: 'person', i }))
       .addTo(pedLayer),
   );
+  nearbyTips.clear();
 }
+
+// ---------- ID tooltips near the cursor ----------
+/** People within this many metres of the mouse show their ID without hovering them. */
+const NEARBY_TIP_RADIUS_M = 50;
+let mouseLatLng: L.LatLng | null = null;
+const nearbyTips = new Set<number>();
+
+/** Opens the tooltips of marked people and people near the cursor, and closes the rest. Only touches markers whose state changes. */
+function syncNearbyTips() {
+  const near = new Set<number>(markedPeds);
+  if (mouseLatLng) {
+    pedMarkers.forEach((m, i) => {
+      if (mouseLatLng!.distanceTo(m.getLatLng()) <= NEARBY_TIP_RADIUS_M) near.add(i);
+    });
+  }
+  for (const i of nearbyTips) if (!near.has(i)) pedMarkers[i]?.closeTooltip();
+  // Hovering a marker and leaving it closes its tooltip, so check the real state rather than our set
+  for (const i of near) if (!pedMarkers[i].isTooltipOpen()) pedMarkers[i].openTooltip();
+  nearbyTips.clear();
+  near.forEach((i) => nearbyTips.add(i));
+}
+
+map.on('mousemove', (e: L.LeafletMouseEvent) => {
+  mouseLatLng = e.latlng;
+  syncNearbyTips();
+});
+map.on('mouseout', () => {
+  mouseLatLng = null;
+  syncNearbyTips();
+});
 
 /** Marker highlight classes follow the state; markers that are off the map have no element. */
 function syncMarkerClasses() {
@@ -348,6 +398,9 @@ function syncMarkerClasses() {
     el.classList.toggle('selected', (selection?.kind === 'person' && selection.i === i) || p === arrested);
     el.classList.toggle('target', arrested !== null && p === target);
     el.classList.toggle('marked', markedPeds.has(i));
+    const ringed = !!tutorialRing?.ids.includes(p.id);
+    el.classList.toggle('tut-hint', ringed && tutorialRing!.tone === 'hint');
+    el.classList.toggle('tut-wrong', ringed && tutorialRing!.tone === 'wrong');
   });
   towerMarkers.forEach((m, i) => m.getElement()?.classList.toggle('selected', selection?.kind === 'tower' && selection.i === i));
 }
@@ -411,6 +464,7 @@ function toggleMark(i: number) {
   // Marked people sit above the crowd so they don't vanish in a cluster
   pedMarkers[i].setZIndexOffset(marked ? 300 : 0);
   syncMarkerClasses();
+  syncNearbyTips();
   renderInspector(true);
 }
 
@@ -532,6 +586,19 @@ $('btn-mission-menu').addEventListener('click', () => {
 /** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
 const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 
+/** How long the title screen takes to fade out (#title-screen's transition in style.css). */
+const TITLE_FADE_MS = 400;
+
+/**
+ * Leaving the title for a round: puts the loading screen up at once, then waits out the
+ * title's fade, so the page doesn't freeze on a half-faded title while the round is built.
+ */
+async function showLoadingFromTitle() {
+  setLoading('Preparing');
+  await nextPaint();
+  await new Promise((resolve) => setTimeout(resolve, TITLE_FADE_MS));
+}
+
 let building = false;
 
 /**
@@ -542,7 +609,10 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
   if (!world || building) return false;
   building = true;
   setPlaying(false);
-  if (!tutorial) tutorialGuide.stop();
+  if (!tutorial) {
+    tutorialGuide.stop();
+    restoreOwnSettings(); // the tutorial's settings were only for its round
+  }
   try {
     const minutes = Math.round(CLIP_SECONDS / 60);
     const step = async (status: string) => {
@@ -558,7 +628,9 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
 
     await step('Generating traffic and people');
     const nextString = scenarioString(seed); // the settings this round is dealt with
-    const next =timed('Round generated', () => generateRound(world!, seed));
+    const next = timed('Round generated', () => generateRound(world!, seed));
+    // The tutorial's round has its crowd thinned around the tram passes it teaches with
+    const plan = tutorial ? prepareTutorialRound(next, TUTORIAL_CANDIDATES, TUTORIAL_REMOVED) : null;
     await step(`Simulating ${minutes} minutes of city sound`);
     const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles, loopLengths, audioAssets?.noiseMap ?? null));
     let audio: Float32Array | null = null;
@@ -568,6 +640,8 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     }
 
     round = next;
+    tutorialPlan = plan;
+    tutorialRing = null;
     roundString = nextString;
     seedLabel.textContent = `Seed ${roundString}`;
     tutorialRound = tutorial;
@@ -653,6 +727,7 @@ function setTime(t: number) {
   });
 
   round.pedestrians.forEach((p, i) => pedMarkers[i].setLatLng(ll(positionAt(p, t))));
+  syncNearbyTips(); // people walk into and out of the cursor's radius; marked tips reopen after a hover closes them
 
   if (arrested && arrested !== round.target) {
     hitLine.setLatLngs([ll(positionAt(arrested, t)), ll(positionAt(round.target, t))]);
@@ -745,6 +820,7 @@ window.addEventListener('keydown', (e) => {
 // ---------- Boot ----------
 // Downloads start straight away, while the title and intro are on screen;
 // building the world and the first round waits for the intro's Start button.
+const defaultsReady = loadDefaultSettings();
 const osmData = loadOsm();
 osmData.catch(() => {}); // reported by boot() once it awaits it
 const noiseMapData = loadNoiseMap().catch((err) => {
@@ -758,10 +834,14 @@ const sampleData = loadSamples().catch((err) => {
 
 async function boot(seed: number, tutorial = false): Promise<boolean> {
   setLoading('Loading map data');
+  await nextPaint();
   const osm = await osmData;
-  setLoading('Loading sounds');
+  setLoading('Building the city');
+  await nextPaint(); // building the world blocks the page for a moment
   addBasemap(map, 'basemap', osm).catch((err) => console.error('Basemap failed to render', err));
   world = buildWorld(osm);
+  setLoading('Loading sounds');
+  await nextPaint();
   const bank = await sampleData;
   if (bank) {
     audioAssets = { samples: bank, noiseMap: await noiseMapData };
@@ -799,8 +879,10 @@ async function play(seed: number, tutorial = false): Promise<boolean> {
  * The intro's Start button. Uses the seed typed on the title screen, or a
  * random one if the field is empty.
  */
-function startGame() {
+async function startGame() {
   const scenario = title.scenario;
+  await showLoadingFromTitle();
+  await defaultsReady; // so the defaults file can't land on top of a shared string's settings
   // A shared string brings its settings along; they replace the player's own
   if (scenario?.settings) updateSettings(scenario.settings);
   void play(scenario?.seed ?? randomSeed());
@@ -820,12 +902,34 @@ const tutorialGuide = new Tutorial({
   },
   targetRevealed: () => !!round && revealedPeds.has(round.pedestrians.indexOf(round.target)),
   arrestResult: () => (round && arrested ? arrested === round.target : null),
+  time: () => time,
+  plan: () => tutorialPlan,
+  targetFacts: () => {
+    if (!round) return '';
+    const { profile } = round.target;
+    const facts: Record<string, string> = {
+      sex: `Gender: ${genderLabel(profile.sex)}.`,
+      age: `Age: ${profile.age}.`,
+      occupation: `Occupation: ${profile.occupation}.`,
+    };
+    return round.clues.map((c) => facts[c]).join(' ');
+  },
+  highlight: (people) => {
+    const key = (h: PeopleHighlight | null) => (h ? `${h.tone}:${h.ids.join(',')}` : '');
+    if (key(people) === key(tutorialRing)) return;
+    tutorialRing = people;
+    syncMarkerClasses();
+  },
 });
 
 /** The title's Tutorial button, and Try again after the tutorial: deals the tutorial's round, then starts the briefing. */
-async function startTutorial() {
+async function startTutorial(fromTitle = false) {
   tutorialGuide.stop();
-  if (await play(TUTORIAL_SEED, true)) tutorialGuide.start();
+  if (fromTitle) await showLoadingFromTitle();
+  await defaultsReady;
+  const scenario = parseScenario(TUTORIAL_SCENARIO)!;
+  if (scenario.settings) borrowSettings(scenario.settings);
+  if (await play(scenario.seed, true)) tutorialGuide.start();
 }
 
-const title = new TitleScreen(startGame, () => void startTutorial());
+const title = new TitleScreen(startGame, () => void startTutorial(true));

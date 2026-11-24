@@ -28,7 +28,7 @@ const field = (label: string, value: string) => `<dt>${label}</dt><dd>${value}</
 const MARK_GLYPH = '<span class="mark-glyph">◆</span>';
 
 const REDACTED = '<span class="redacted">██████</span>';
-const genderLabel = (sex: Profile['sex']) => (sex === 'female' ? 'Female' : 'Male');
+export const genderLabel = (sex: Profile['sex']) => (sex === 'female' ? 'Female' : 'Male');
 
 export function emptyHtml(): string {
   return '<div class="muted small">Nothing selected. Hover a cell tower to see its range, click it or a person to inspect.</div>';

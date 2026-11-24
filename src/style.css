@@ -414,6 +414,25 @@ label { text-transform: uppercase; font-size: 12px; }
   background: var(--cyan);
   box-shadow: 0 0 6px var(--cyan);
 }
+/* Tutorial: who to look at (green ring) and who to drop (red ring with a cross) */
+.ped.tut-hint::after,
+.ped.tut-wrong::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+  border: 2px solid var(--green);
+  border-radius: 50%;
+  box-shadow: 0 0 12px var(--green), inset 0 0 6px var(--green);
+  animation: pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+.ped.tut-wrong::after {
+  border-color: var(--red);
+  box-shadow: 0 0 12px var(--red), inset 0 0 6px var(--red);
+  background:
+    linear-gradient(45deg, transparent 46%, var(--red) 46% 54%, transparent 54%),
+    linear-gradient(-45deg, transparent 46%, var(--red) 46% 54%, transparent 54%);
+}
 .mark-glyph { color: var(--amber); text-shadow: 0 0 6px var(--amber); margin-right: 4px; }
 .mark-tag { margin-left: auto; color: var(--amber); font-size: 11px; text-shadow: 0 0 6px var(--amber); }
 .mark-legend { color: var(--amber); }
@@ -551,6 +570,9 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
   opacity: 0;
   pointer-events: none;
 }
+/* The loading screen appears at once (only fades out): the work behind it blocks the page,
+   so a fade-in would stall almost invisible until the work is done */
+#loading:not(.hidden) { transition: none; }
 .mission-title {
   font-family: var(--display);
   font-weight: 700;

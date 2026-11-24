@@ -1,5 +1,8 @@
 // Player settings: sound levels, sound propagation and spawn counts.
-// Kept in localStorage, so they survive reloads. Code reads `settings` at the
+// Kept in localStorage, so they survive reloads. Until the player changes
+// something (and again after Reset), the defaults come from
+// public/data/default-settings.json, fetched at startup (loadDefaultSettings).
+// DEFAULTS below is only the fallback for that file and for missing fields. Code reads `settings` at the
 // moment it needs a value, so a change applies from the next round on (music
 // and interface volumes apply at once, see onSettingsChange).
 
@@ -166,36 +169,42 @@ function clampFleet(v: unknown, l: Limits, fallback: SirenFleet): SirenFleet {
   return { total, minActive, maxActive };
 }
 
-/** Defaults overlaid with whatever valid values `raw` has; unknown or bad entries are dropped. */
-function sanitize(raw: unknown): Settings {
+/** The defaults in use: the default settings file once it has loaded, else DEFAULTS. */
+let defaults: Settings = structuredClone(DEFAULTS);
+
+/** `base` overlaid with whatever valid values `raw` has; unknown or bad entries are dropped. */
+function sanitize(raw: unknown, base: Settings = defaults): Settings {
   const r = (raw ?? {}) as Partial<Record<keyof Settings, Record<string, unknown>>>;
-  const out = structuredClone(DEFAULTS);
-  for (const k of VOLUME_KEYS) out.volume[k] = clamp(r.volume?.[k], VOLUME_LIMITS, DEFAULTS.volume[k]);
-  for (const k of VISUAL_KEYS) out.visual[k] = clamp(r.visual?.[k], VISUAL_LIMITS, DEFAULTS.visual[k]);
+  const out = structuredClone(base);
+  for (const k of VOLUME_KEYS) out.volume[k] = clamp(r.volume?.[k], VOLUME_LIMITS, base.volume[k]);
+  for (const k of VISUAL_KEYS) out.visual[k] = clamp(r.visual?.[k], VISUAL_LIMITS, base.visual[k]);
   for (const k of Object.keys(PROPAGATION_LIMITS) as (keyof Settings['propagation'])[]) {
-    out.propagation[k] = clamp(r.propagation?.[k], PROPAGATION_LIMITS[k], DEFAULTS.propagation[k]);
+    out.propagation[k] = clamp(r.propagation?.[k], PROPAGATION_LIMITS[k], base.propagation[k]);
   }
-  out.spawn.pedestrians = Math.round(clamp(r.spawn?.pedestrians, SPAWN_LIMITS.pedestrians, DEFAULTS.spawn.pedestrians));
+  out.spawn.pedestrians = Math.round(clamp(r.spawn?.pedestrians, SPAWN_LIMITS.pedestrians, base.spawn.pedestrians));
   for (const k of ['ambulance', 'police'] as const) {
-    out.spawn[k] = clampFleet(r.spawn?.[k], SPAWN_LIMITS[k], DEFAULTS.spawn[k]);
+    out.spawn[k] = clampFleet(r.spawn?.[k], SPAWN_LIMITS[k], base.spawn[k]);
   }
   for (const k of ['airplane', 'construction'] as const) {
-    out.spawn[k] = clampRange(r.spawn?.[k], SPAWN_LIMITS[k], DEFAULTS.spawn[k]);
+    out.spawn[k] = clampRange(r.spawn?.[k], SPAWN_LIMITS[k], base.spawn[k]);
   }
   const logFrequency = r.display?.logFrequency;
   if (typeof logFrequency === 'boolean') out.display.logFrequency = logFrequency;
   return out;
 }
 
-function load(): Settings {
+/** The player's saved settings, or null if they have none (never changed anything, or reset). */
+function loadSaved(): Settings | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    return sanitize(stored ? JSON.parse(stored) : null);
+    const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY);
+    return stored ? sanitize(JSON.parse(stored)) : null;
   } catch (err) {
     console.error('Settings failed to load, using defaults', err);
-    return structuredClone(DEFAULTS);
+    return null;
   }
 }
+
+const load = (): Settings => loadSaved() ?? structuredClone(defaults);
 
 /** The live settings. Read from it; change it only through updateSettings / resetSettings. */
 export const settings: Settings = load();
@@ -207,14 +216,23 @@ export function onSettingsChange(fn: () => void) {
   listeners.add(fn);
 }
 
+const notify = () => listeners.forEach((fn) => fn());
+
+/**
+ * Settings the tutorial put in place for its round without saving them (see
+ * borrowSettings); the player's own come back with restoreOwnSettings.
+ */
+let borrowed = false;
+
 function commit() {
   Object.assign(settings, sanitize(settings));
+  borrowed = false; // a change the player makes is theirs now, whatever was in place before
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch (err) {
     console.error('Settings failed to save', err);
   }
-  for (const fn of listeners) fn();
+  notify();
 }
 
 /** Applies `change` to the live settings, then validates, saves and notifies. */
@@ -223,9 +241,55 @@ export function updateSettings(change: (s: Settings) => void) {
   commit();
 }
 
+/**
+ * Back to the defaults. The saved settings are dropped rather than overwritten,
+ * so the player follows the default settings file again, changes to it included.
+ */
 export function resetSettings() {
-  Object.assign(settings, structuredClone(DEFAULTS));
-  commit();
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (err) {
+    console.error('Settings failed to reset', err);
+  }
+  borrowed = false;
+  Object.assign(settings, structuredClone(defaults));
+  notify();
+}
+
+/**
+ * Fetches the default settings file and makes it the defaults. A player without
+ * saved settings gets them at once. If the file is missing or bad, DEFAULTS stay.
+ */
+export async function loadDefaultSettings(): Promise<void> {
+  try {
+    // A settings file, as Export writes it
+    const res = await fetch(`${import.meta.env.BASE_URL}data/default-settings.json`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    defaults = sanitize(settingsBody(await res.text()), DEFAULTS);
+  } catch (err) {
+    console.error('Default settings failed to load, using the built-in ones', err);
+    return;
+  }
+  if (!borrowed && !loadSaved()) {
+    Object.assign(settings, structuredClone(defaults));
+    notify();
+  }
+}
+
+/** Puts `change` in place for now without saving it, e.g. the tutorial's settings for its round. */
+export function borrowSettings(change: (s: Settings) => void) {
+  change(settings);
+  Object.assign(settings, sanitize(settings));
+  borrowed = true;
+  notify();
+}
+
+/** Undoes borrowSettings: the player's saved settings, or the defaults if they have none. */
+export function restoreOwnSettings() {
+  if (!borrowed) return;
+  borrowed = false;
+  Object.assign(settings, load());
+  notify();
 }
 
 /** Marks an exported settings file, so importing some other JSON is caught. */
@@ -244,6 +308,12 @@ export function exportSettings(): string {
  * default. Throws with a readable message if the text isn't a settings file.
  */
 export function importSettings(text: string) {
+  Object.assign(settings, sanitize(settingsBody(text)));
+  commit();
+}
+
+/** The settings object in a settings file's text (exported, or bare). Throws with a readable message if there is none. */
+function settingsBody(text: string): unknown {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -256,8 +326,7 @@ export function importSettings(text: string) {
   const body = 'settings' in obj ? obj.settings : obj;
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   if (!('volume' in b || 'visual' in b || 'propagation' in b || 'spawn' in b || 'display' in b)) throw new Error('The file does not contain settings.');
-  Object.assign(settings, sanitize(body));
-  commit();
+  return body;
 }
 
 /** A volume setting as a linear amplitude factor (0..1). */

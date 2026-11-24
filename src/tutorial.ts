@@ -9,14 +9,20 @@
 // through TutorialHost, so main.ts needs no tutorial hooks of its own.
 
 import type { SpectrogramView } from './spectrogram';
+import { PASS_WINDOW_S, type TutorialPlan } from './tutorial-round';
 import { typewrite, type Typing } from './typewriter';
 
 /**
- * The round the tutorial is scripted for. It is dealt with the player's
- * current settings, like any other seed, so the script matches the round
- * only with the settings the seed was picked with.
+ * The round the tutorial is scripted for: a seed and the settings it was
+ * picked with, as a scenario string (settings.ts). The tutorial puts those
+ * settings in place for its round only; the player's own come back after.
  */
-export const TUTORIAL_SEED = 411446990;
+export const TUTORIAL_SCENARIO = '222955-11A000Z052S262S2S0A0A0A0A0A0A0A0U120C0A080A05040P0I0A0J06010206010201030206';
+
+/** The people by the tram at the first pass that the player marks; the target is one of them. */
+export const TUTORIAL_CANDIDATES = ['P-74935', 'P-13218', 'P-33484', 'P-14474', 'P-04900'] as const;
+/** People taken off the tutorial's map because they would muddle the lesson. */
+export const TUTORIAL_REMOVED = ['P-46200'] as const;
 
 /** What the tutorial reads from the game. */
 export interface TutorialHost {
@@ -35,6 +41,20 @@ export interface TutorialHost {
   targetRevealed(): boolean;
   /** null while nobody is arrested, else whether the arrest was the target. */
   arrestResult(): boolean | null;
+  /** The playhead, s. */
+  time(): number;
+  /** The round's tram passes, decoy and bell (tutorial-round.ts), or null if it has none. */
+  plan(): TutorialPlan | null;
+  /** What the target panel tells about the target, e.g. "Age: 74. Occupation: Retired engineer." */
+  targetFacts(): string;
+  /** Rings these people on the map, or clears the rings with null. */
+  highlight(people: PeopleHighlight | null): void;
+}
+
+/** People ringed on the map: 'hint' for who to look at, 'wrong' for who to drop. */
+export interface PeopleHighlight {
+  ids: string[];
+  tone: 'hint' | 'wrong';
 }
 
 type Area = Element | DOMRect | null;
@@ -43,7 +63,8 @@ type Target = () => Area;
 type Place = 'center' | 'map' | 'map-bottom' | 'bottom';
 
 interface Step {
-  text: string;
+  /** A function is read when the step opens, for text that depends on the round. */
+  text: string | (() => string);
   /**
    * The dark overlay: 'all' darkens the whole screen, a target darkens all
    * but it. Either way the game is blocked. Omitted, the game is open.
@@ -58,6 +79,8 @@ interface Step {
   advance?: () => boolean;
   /** Ends the tutorial: its button says Finish and closes the box. */
   last?: boolean;
+  /** People to ring on the map right now, or null for none. */
+  people?: () => PeopleHighlight | null;
 }
 
 const $ = (id: string) => document.getElementById(id);
@@ -93,6 +116,33 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
     const m = h.marked();
     return m.length === 1 && m[0] === h.targetId();
   };
+  const atPass = (which: 'pass1' | 'pass2') => {
+    const plan = h.plan();
+    return !!plan && Math.abs(h.time() - plan[which]) <= PASS_WINDOW_S;
+  };
+  /** Exactly the candidates are marked. */
+  const candidatesMarked = () => {
+    const plan = h.plan();
+    if (!plan) return h.marked().length > 0;
+    const m = h.marked();
+    return m.length === plan.candidates.length && plan.candidates.every((id) => m.includes(id));
+  };
+  /** At the first pass: the candidates, all right by the tram. */
+  const firstPassPeople = (): PeopleHighlight | null => {
+    const plan = h.plan();
+    if (!plan || !atPass('pass1')) return null;
+    return { ids: plan.candidates, tone: 'hint' };
+  };
+  /** At the second pass: the candidates who are now far from any tram and should be unmarked. */
+  const secondPassPeople = (): PeopleHighlight | null => {
+    const plan = h.plan();
+    if (!plan || !atPass('pass2')) return null;
+    const marked = h.marked();
+    const ids = plan.decoys.filter((id) => marked.includes(id));
+    return ids.length ? { ids, tone: 'wrong' } : null;
+  };
+  const countWord = (n: number) => ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'][n] ?? String(n);
+  const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
 
   const steps: Step[] = [
     {
@@ -143,14 +193,14 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
     {
       text:
         'You can see several shapes and bright spots in the recording. ' +
-        "Let's inspect the period from 2:40 to 3:15. Zoom in on it and play it (Space bar) to hear it.\n" +
+        "Let's inspect the period from 0:25 to 1:13. Zoom in on it and play it (Space bar) to hear it.\n" +
         'When you are ready, click Next.',
-      frames: [span(160, 195)],
+      frames: [span(25, 73)],
       place: 'map-bottom',
     },
     {
-      text: 'The wavy part is the sound of an ambulance, but did you notice the loud event at 2:55? That sounded like a tram passing really nearby.',
-      frames: [span(173, 177)],
+      text: 'The wavy part is the sound of an ambulance in the distance, but did you notice the loud event at 0:35? That sounded like a tram passing really nearby.',
+      frames: [span(32, 38)],
       place: 'map-bottom',
     },
     {
@@ -161,20 +211,24 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
       advance: h.tramsUnlocked,
     },
     {
-      text:
+      text: () =>
         'Now we can see the exact locations of all the trams in the area. ' +
         'Move the playhead to the brightest part, where we can hear the tram, and look at the map. ' +
-        'Zoom in on the trams, select the people who are really near them (within a few meters) and mark them.',
-      frames: [span(173, 177)],
+        'Zoom in on the trams, select the people who are really near them (within a few meters) and mark them.' +
+        'Select a person and in the Inspector panel you can MARK them.' +
+        (h.plan() ? ` There are ${countWord(h.plan()!.candidates.length)} of them.` : ''),
+      frames: [span(32, 38)],
       place: 'map-bottom',
-      next: () => h.marked().length > 0,
+      next: candidatesMarked,
+      people: firstPassPeople,
     },
     {
       text:
-        'If you zoom out on the spectrogram, you might notice another short loud event at 8:25. ' +
+        'If you zoom out on the spectrogram, you might notice another short loud event at 1:42. ' +
         'If you listen to it, you will hear that it is another tram passing close by.',
-      frames: [span(503, 507)],
+      frames: [span(97, 105)],
       place: 'map-bottom',
+      people: secondPassPeople,
     },
     {
       text:
@@ -184,14 +238,25 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
         'Hint: you can add tags to the timeline so you can navigate it more easily.',
       place: 'map-bottom',
       next: onlyTargetMarked,
+      people: secondPassPeople,
     },
     {
-      text:
-        'We have a suspect near the South Church, next to the edge of the map. ' +
-        "We might have the correct person, but it's good to double check. " +
-        'One thing that might confirm it: if you listen carefully between 0:10 and 0:45, you can hear church bells. ' +
-        'That builds strong suspicion, but it is not a confirmation.',
-      frames: [span(10, 45)],
+      text: () => {
+        const bell = h.plan()?.bell;
+        if (!bell) return "We have a suspect. We might have the correct person, but it's good to double check.";
+        return (
+          `We have a suspect near ${bell.name}. ` +
+          "We might have the correct person, but it's good to double check. " +
+          `One thing that might confirm it: if you listen carefully between ${clock(bell.start)} and ${clock(bell.end)}, you can hear church bells. ` +
+          'That builds strong suspicion, but it is not a confirmation.'
+        );
+      },
+      frames: [
+        () => {
+          const bell = h.plan()?.bell;
+          return bell ? h.spectro.rangeRect(bell.start, bell.end) : null;
+        },
+      ],
       place: 'map-bottom',
     },
     {
@@ -219,7 +284,7 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
       advance: () => h.selectedPerson() === h.targetId(),
     },
     {
-      text: "Gender: Female. Age: 58. It's a match.\nWhenever you are ready, you can send out the arrest warrant.",
+      text: () => `${h.targetFacts()} It's a match.\nWhenever you are ready, you can send out the arrest warrant.`,
       frames: [() => q('#inspector .btn-arrest')],
       place: 'map-bottom',
       next: false,
@@ -321,6 +386,7 @@ export class Tutorial {
   }
 
   stop() {
+    this.host.highlight(null);
     this.run++;
     this.step = null;
     this.typing = null;
@@ -337,13 +403,14 @@ export class Tutorial {
   private present(step: Step) {
     this.step = step;
     const run = ++this.run;
-    this.full.textContent = step.text; // invisible, with its own cursor: holds the box at its final size so nothing shifts
+    const text = typeof step.text === 'function' ? step.text() : step.text;
+    this.full.textContent = text; // invisible, with its own cursor: holds the box at its final size so nothing shifts
     const node = document.createTextNode('');
     this.typed.replaceChildren(node);
     this.textEl.classList.add('typing');
     this.nextBtn.textContent = step.last ? 'Finish' : 'Next';
     this.root.classList.toggle('blocking', step.spot !== undefined);
-    const typing = typewrite(node, step.text, { live: () => run === this.run });
+    const typing = typewrite(node, text, { live: () => run === this.run });
     this.typing = typing;
     void typing.done.then((finished) => {
       if (finished && run === this.run) this.textEl.classList.remove('typing');
@@ -395,6 +462,8 @@ export class Tutorial {
       el.hidden = !r;
       if (r) setBox(el, new DOMRect(r.left - FRAME_PAD, r.top - FRAME_PAD, r.width + 2 * FRAME_PAD, r.height + 2 * FRAME_PAD));
     });
+
+    this.host.highlight(step.people?.() ?? null);
 
     const next = step.next ?? true;
     this.nextBtn.hidden = !(typeof next === 'function' ? next() : next);

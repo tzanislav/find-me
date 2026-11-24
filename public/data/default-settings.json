@@ -1,0 +1,64 @@
+{
+  "app": "for-your-safety",
+  "version": 1,
+  "settings": {
+    "volume": {
+      "ambulance": 14,
+      "police": 17,
+      "tram": 32,
+      "airplane": 32,
+      "construction": 100,
+      "bell": 78,
+      "traffic": 100,
+      "city": 100,
+      "music": 100,
+      "ui": 63
+    },
+    "visual": {
+      "ambulance": 1,
+      "police": 1,
+      "tram": 0.6,
+      "airplane": 1,
+      "construction": 1,
+      "bell": 1,
+      "traffic": 1,
+      "city": 3
+    },
+    "propagation": {
+      "hearingRangeM": 520,
+      "airplaneRangeM": 3000,
+      "falloffDb": 6,
+      "airAbsorption": 4,
+      "doppler": 2,
+      "muffleM": 30,
+      "reverbStartM": 40,
+      "reverbFullM": 260,
+      "reverbPct": 90,
+      "reverbDuckPct": 50
+    },
+    "spawn": {
+      "pedestrians": 100,
+      "ambulance": {
+        "total": 6,
+        "minActive": 1,
+        "maxActive": 3
+      },
+      "police": {
+        "total": 6,
+        "minActive": 1,
+        "maxActive": 3
+      },
+      "airplane": [
+        1,
+        3
+      ],
+      "construction": [
+        2,
+        6
+      ]
+    },
+    "display": {
+      "logFrequency": true
+    }
+  }
+}
