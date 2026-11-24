@@ -1,4 +1,4 @@
-# Game screen layout and mobile mode
+﻿# Game screen layout and mobile mode
 
 Plan for a new game screen layout that also works on phones and small tablets. Written 2026-11-24, before implementation.
 
@@ -11,13 +11,13 @@ The new layout replaces the current one **everywhere**, on desktop and on mobile
 |T|                         |   T = Target tray tab (red)
 |O|        MAP  65%         |   O = Tools tray tab (cyan)
 | |                         |
-| |               [LEGEND]  |   legend tab, bottom right
+| |                         |
 +---------------------------+
 |                           |
 |    SPECTROGRAM  35%       |
 |                           |
 | ====[########]=========== |   view scrollbar
-| ?   3:43  ( ▶ )  t  🔊 ♪ |   bottom bar
+| ?   3:43  ( â–¶ )  t  ðŸ”Š â™ª |   bottom bar
 +---------------------------+
 ```
 
@@ -31,7 +31,7 @@ Three zones: left, centre and right. The Play button is centred on the bar itsel
 | Zone | Contents |
 |---|---|
 | Left | `?`: small button that opens the Field Guide |
-| Centre | Time readout, then Play / Pause (the big button, at least 48 × 48 px), then the tag button (a small outline tag icon) |
+| Centre | Time readout, then Play / Pause (the big button, at least 48 Ã— 48 px), then the tag button (a small outline tag icon) |
 | Far right | Sound and Music: small icon toggles, a speaker and a music note. Dimmed with a strike when off. Buttons with `aria-pressed`, not checkboxes |
 
 Removed from the bar:
@@ -39,9 +39,9 @@ Removed from the bar:
 | Item | Now |
 |---|---|
 | Tag select, Tag, Clear tags | Replaced by the tag button and its picker (below) |
-| Zoom −, +, Fit | Hidden. The keys (`+`, `-`, `0`), the wheel, two-finger gestures and the scrollbar replace them |
+| Zoom âˆ’, +, Fit | Hidden. The keys (`+`, `-`, `0`), the wheel, two-finger gestures and the scrollbar replace them |
 | Log checkbox | Hidden. The saved setting still applies and can be changed in Settings |
-| Instruction hint ("Click or drag to scrub…") | Removed |
+| Instruction hint ("Click or drag to scrubâ€¦") | Removed |
 
 The Sound and Music toggles keep driving `player.setMuted` / `music.setMuted` as now; only their markup changes.
 
@@ -58,9 +58,11 @@ The same on desktop and mobile.
 
 The Field Guide panel leaves the map. The `?` button opens it as an overlay over the map, with a close button. It closes on the close button, on `?` again, or on a click or tap outside it.
 
+The legend (`#legend`) is at the top of the guide, in two columns; it has no tray of its own.
+
 The guide overlay also takes the map's leftover bits, under the guide's own content:
 
-- The intro text from `#side` ("One of these people recorded the sound below…"), at the top.
+- The intro text from `#side` ("One of these people recorded the sound belowâ€¦"), at the top.
 - The siren note (`#siren-note`), once police or ambulance data is bought.
 - The round's seed label (`#seed-label`), still click to copy.
 
@@ -81,7 +83,6 @@ Panels that now sit on the map become trays: a narrow tab on the map edge that s
 |---|---|---|---|
 | Target | Left, upper tab | Red | `#target` (target profile) |
 | Tools | Left, lower tab | Cyan | Energy (`.energy-panel`), data access (`#intel`), "Show fixed source zones" toggle, New round |
-| Legend | Bottom right | Cyan | `#legend`. Its tab is horizontal; the panel slides up from it and collapses back down |
 
 ### Open and close rules
 
@@ -98,10 +99,10 @@ Panels that now sit on the map become trays: a narrow tab on the map edge that s
 
 ## Map: inspector
 
-- No inspector panel when nothing is selected. The empty "Nothing selected…" text goes away.
+- No inspector panel when nothing is selected. The empty "Nothing selectedâ€¦" text goes away.
 - Selecting a tower or person opens the inspector; `select(null)` closes it. In mobile mode, opening it also closes any open tray.
 - It slides in from the right edge, 320 px wide (`min(320px, 85vw)` on mobile), as tall as the map, and scrolls inside.
-- **Dragging or pinching the map does not deselect.** Only a click or tap on empty map does. Leaflet fires `click` only for presses that moved less than its tolerance, so `map.on('click', …)` should already behave this way. Check this on a real device, and add a moved-distance guard if it doesn't.
+- **Dragging or pinching the map does not deselect.** Only a click or tap on empty map does. Leaflet fires `click` only for presses that moved less than its tolerance, so `map.on('click', â€¦)` should already behave this way. Check this on a real device, and add a moved-distance guard if it doesn't.
 - Clicking a person in a tower's connected list switches the inspector to that person, as now.
 
 ## Spectrogram
@@ -207,7 +208,14 @@ A burger button left of `?` in the bottom bar, the same size as the tag, sound a
 
 ## Tutorial
 
-The tutorial frames `#target`, the data access buttons and so on, which are now inside trays, and the Field Guide, which is now behind `?`. A step that points at something in a tray (or in the guide) opens it automatically before framing it. On desktop the trays start open, so this mostly matters on mobile. The tutorial text box also needs a position that fits a phone.
+The tutorial box (`src/tutorial.ts`) is titled TUTORIAL.
+
+- **Trays:** a step lists the trays it explains or needs (`trays`) and opens them when it starts. On mobile, the open box also closes every tray its step doesn't need. Presses on the tutorial don't count as outside presses, so they don't close a tray the step opened.
+- **Narrower beside a tray:** a step with trays uses a narrower box (340 px) placed beside the tray. If there is no room beside it (phones), the box goes below the map, over the spectrogram.
+- **Waiting on the player:** a step with a task (`need`, `done`) keeps Next in place but disabled. Clicking it shows a tooltip saying what is needed, for 4 s. When the task is done (`done` holds), the tutorial moves on by itself.
+- **Minimize:** a button in the box's header minimizes it to a green horizontal TUTORIAL tab on the map's bottom edge, at the right (the OpenStreetMap credit is top right). Minimized, the box and the dark overlay go, but the frames and people rings stay, and the game is open. The tab brings it back, and so does every step change, including finishing a task.
+- **Exit is a hold** (1 s, 0.5 s on mobile), so a stray tap can't end the tutorial. A plain tap shows a tooltip saying to hold it.
+- **Touch wording:** the scrubbing step and the "play it" step describe touch controls on mobile.
 
 ## Open questions
 

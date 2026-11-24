@@ -3,7 +3,8 @@
 // Flow: title + [Start] [Tutorial] [Settings] [Credits]. Start fades the buttons, then the title,
 // then types public/text/intro.txt with a cursor. A Start button appears in
 // the bottom right of the text field shortly after typing begins; it opens
-// the game straight away, whether or not the text has finished. Tutorial
+// the game straight away, whether or not the text has finished. With Skip intro
+// ticked (kept in a cookie), Start opens the game at once. Tutorial
 // skips the intro and opens the tutorial round (tutorial.ts).
 //
 // The intro and credits are plain text files in public/text/, so they can be
@@ -22,6 +23,15 @@ const PAUSE_BEFORE_TEXT_MS = 600;
 /** How long after typing begins the intro's Start button appears. */
 const START_BUTTON_DELAY_MS = 1500;
 
+/** Cookie that remembers the Skip intro box, for a year. */
+const SKIP_INTRO_COOKIE = 'skip-intro';
+const SKIP_INTRO_MAX_AGE_S = 365 * 24 * 60 * 60;
+
+const readSkipIntro = () => document.cookie.split('; ').includes(`${SKIP_INTRO_COOKIE}=1`);
+function saveSkipIntro(on: boolean) {
+  document.cookie = `${SKIP_INTRO_COOKIE}=${on ? 1 : 0}; max-age=${SKIP_INTRO_MAX_AGE_S}; path=/; SameSite=Lax`;
+}
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -38,6 +48,7 @@ export class TitleScreen {
   private readonly buttons = $('title-buttons');
   private readonly seedField = $('title-seed');
   private readonly seedInput = $<HTMLInputElement>('seed-input');
+  private readonly skipIntro = $<HTMLInputElement>('skip-intro');
   private readonly intro = $('intro');
   private readonly introBox = $('intro-text');
   private readonly typed = $('intro-typed');
@@ -66,6 +77,8 @@ export class TitleScreen {
     private readonly onTutorial: () => void,
   ) {
     $('btn-title-start').addEventListener('click', () => void this.sequence());
+    this.skipIntro.checked = readSkipIntro();
+    this.skipIntro.addEventListener('change', () => saveSkipIntro(this.skipIntro.checked));
     $('btn-title-tutorial').addEventListener('click', () => {
       this.run++;
       this.seedInput.blur();
@@ -94,11 +107,15 @@ export class TitleScreen {
     this.screen.addEventListener('click', (e) => {
       if (!this.introStart.contains(e.target as Node)) this.skipTyping?.();
     });
-    this.introStart.addEventListener('click', () => {
-      this.run++;
-      this.screen.classList.add('hidden');
-      this.onStart();
-    });
+    this.introStart.addEventListener('click', () => this.start());
+  }
+
+  /** Leaves the title for the game. */
+  private start() {
+    this.run++;
+    this.seedInput.blur();
+    this.screen.classList.add('hidden');
+    this.onStart();
   }
 
   /** The seed (and shared settings) typed on the title screen, or null for a random round. */
@@ -130,6 +147,7 @@ export class TitleScreen {
   }
 
   private async sequence() {
+    if (this.skipIntro.checked) return this.start();
     const run = ++this.run;
     const live = () => run === this.run;
 

@@ -23,9 +23,13 @@
         <div class="intro-actions"><button id="btn-intro-start" class="gone">Start</button></div>
       </div>
       <!-- Empty = a random round; a number replays that round with your settings, a shared "<seed>-<code>" with its own -->
-      <label id="title-seed" class="title-seed">
-        Seed <input id="seed-input" type="text" placeholder="random" autocomplete="off" spellcheck="false" />
-      </label>
+      <div id="title-seed" class="title-seed">
+        <!-- Start goes straight to the round, without the typed intro; remembered in a cookie -->
+        <label class="title-skip-intro"><input id="skip-intro" type="checkbox" /> Skip intro</label>
+        <label class="title-seed-row">
+          Seed <input id="seed-input" type="text" placeholder="random" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
       <div id="credits" class="credits-backdrop hidden">
         <div class="panel credits-window">
           <div class="title">Credits</div>
@@ -107,12 +111,6 @@
             <button class="tray-tab" data-tray-tab="tools"><span>Tools</span></button>
           </div>
         </div>
-        <div class="map-overlay tray tray-bottom" data-tray="legend">
-          <div class="tray-body">
-            <div class="panel" id="legend"></div>
-          </div>
-          <button class="tray-tab" data-tray-tab="legend"><span>Legend</span></button>
-        </div>
 
         <!-- Field guide (guide.ts) behind the bottom bar's ? button, with the round's notes and seed -->
         <div id="guide-overlay" class="map-overlay guide-overlay panel hidden">
@@ -121,6 +119,7 @@
             <button id="btn-guide-close" class="guide-close" title="Close (Esc)">×</button>
           </div>
           <div class="guide-scroll">
+            <div id="legend" class="guide-legend"></div>
             <div class="guide-game">FOR YOUR SAFETY <span class="badge">PROTOTYPE</span></div>
             <div class="muted small">One of these people recorded the sound below. Everyone's data is locked, but every phone talks to its nearest cell tower. Find the target and arrest them by ID.</div>
             <div id="siren-note" class="siren-note" hidden>Note: not all emergency vehicles have their sirens on.</div>

@@ -153,6 +153,20 @@ function airplaneShapeDb(hz: number): number {
 }
 
 /**
+ * The airplane's low-frequency rumble is dimmed on the spectrogram so it
+ * doesn't swamp the picture: -20 dB (10% amplitude) up to
+ * AIRPLANE_LOW_CUT_HZ, fading out by one octave above it. Applied after the
+ * spectrum is placed, so it works on the recording's profile too. The audio
+ * itself is unchanged.
+ */
+const AIRPLANE_LOW_CUT_DB = -20;
+const AIRPLANE_LOW_CUT_HZ = 600;
+function airplaneLowCutDb(hz: number): number {
+  const fade = Math.min(1, Math.max(0, 1 - Math.log2(Math.max(hz, 1) / AIRPLANE_LOW_CUT_HZ)));
+  return AIRPLANE_LOW_CUT_DB * fade;
+}
+
+/**
  * Hand-made spectral shapes per source type, modelled on their recordings.
  * `lt` is time since the source started; `loopPos` is where in its recording
  * the audio is (lt when there is no loop length).
@@ -255,7 +269,8 @@ export function simulate(
     const here = positionAt(listener, t);
 
     // Per-column absorption depends on distance, so build emitters per source.
-    const makeEmit = (absorbPerKhz: number): Emit => ({
+    // `postDb` is an optional per-frequency visual weighting applied after placement.
+    const makeEmit = (absorbPerKhz: number, postDb: (hz: number) => number = () => 0): Emit => ({
       tone(freq, db, widthHz = HZ_PER_BIN) {
         const center = freq / HZ_PER_BIN;
         const sigma = widthHz / HZ_PER_BIN;
@@ -264,7 +279,7 @@ export function simulate(
         for (let b = lo; b <= hi; b++) {
           const fb = (b + 0.5) * HZ_PER_BIN;
           const g = Math.exp(-0.5 * ((b + 0.5 - center) / sigma) ** 2);
-          pow[base + b] += g * dbToPow(db - absorbPerKhz * (fb / 1000));
+          pow[base + b] += g * dbToPow(db - absorbPerKhz * (fb / 1000) + postDb(fb));
         }
       },
       band(fLo, fHi, db, tilt = 0) {
@@ -272,7 +287,7 @@ export function simulate(
         const hi = Math.min(BINS - 1, Math.ceil(fHi / HZ_PER_BIN));
         for (let b = lo; b <= hi; b++) {
           const fb = (b + 0.5) * HZ_PER_BIN;
-          const level = db + tilt * Math.log2(Math.max(fb, 1) / fLo) - absorbPerKhz * (fb / 1000);
+          const level = db + tilt * Math.log2(Math.max(fb, 1) / fLo) - absorbPerKhz * (fb / 1000) + postDb(fb);
           pow[base + b] += dbToPow(level);
         }
       },
@@ -290,7 +305,7 @@ export function simulate(
         for (let b = lo; b <= hi; b++) {
           const fb = (b + 0.5) * HZ_PER_BIN;
           const speckle = -Math.log(1 - rnd()); // noise power per bin is exponentially distributed
-          pow[base + b] += total * w[b] * speckle * dbToPow(-absorbPerKhz * (fb / 1000));
+          pow[base + b] += total * w[b] * speckle * dbToPow(-absorbPerKhz * (fb / 1000) + postDb(fb));
         }
       },
       spectrum(shares, db, dop) {
@@ -300,7 +315,7 @@ export function simulate(
           const to = Math.round((b + 0.5) * dop - 0.5); // Doppler moves energy up or down in pitch
           if (to < 0 || to >= BINS) continue;
           const fb = (to + 0.5) * HZ_PER_BIN;
-          pow[base + to] += total * shares[b] * dbToPow(-absorbPerKhz * (fb / 1000));
+          pow[base + to] += total * shares[b] * dbToPow(-absorbPerKhz * (fb / 1000) + postDb(fb));
         }
       },
     });
@@ -331,7 +346,7 @@ export function simulate(
       const volume = volumes[src.kind];
       if (gain === null || volume === null) return;
       const received = src.levelDb + gain + volume;
-      const emit = makeEmit(absorb * (d / 1000));
+      const emit = makeEmit(absorb * (d / 1000), src.kind === 'airplane' ? airplaneLowCutDb : undefined);
       const profile = profiles[src.kind];
       if (profile) {
         const frame = profileFrame(profile, tau - src.start, voiceOffsetS(seed, i));

@@ -5,10 +5,10 @@
     "volume": {
       "ambulance": 14,
       "police": 17,
-      "tram": 32,
-      "airplane": 32,
+      "tram": 69,
+      "airplane": 78,
       "construction": 100,
-      "bell": 78,
+      "bell": 47,
       "traffic": 100,
       "city": 100,
       "music": 100,
@@ -17,16 +17,16 @@
     "visual": {
       "ambulance": 1,
       "police": 1,
-      "tram": 0.6,
-      "airplane": 1,
+      "tram": 1,
+      "airplane": 2,
       "construction": 1,
-      "bell": 1,
+      "bell": 0.5,
       "traffic": 1,
       "city": 3
     },
     "propagation": {
       "hearingRangeM": 520,
-      "airplaneRangeM": 3000,
+      "airplaneRangeM": 3400,
       "falloffDb": 6,
       "airAbsorption": 4,
       "doppler": 2,
@@ -37,7 +37,7 @@
       "reverbDuckPct": 50
     },
     "spawn": {
-      "pedestrians": 100,
+      "pedestrians": 750,
       "ambulance": {
         "total": 6,
         "minActive": 1,

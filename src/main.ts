@@ -49,7 +49,6 @@ import {
   restoreOwnSettings,
   scenarioString,
   settings,
-  updateSettings,
 } from './settings';
 import { TUTORIAL_CANDIDATES, TUTORIAL_REMOVED, TUTORIAL_SCENARIO, Tutorial, type PeopleHighlight } from './tutorial';
 import { prepareTutorialRound, type TutorialPlan } from './tutorial-round';
@@ -99,8 +98,8 @@ const map = L.map('map', {
 /** Start this many zoom levels closer than "whole play box fits". */
 const START_ZOOM_IN = 0.75;
 map.setView(box.getCenter(), map.getBoundsZoom(box) + START_ZOOM_IN);
-// Bottom left: the legend tray's tab sits bottom right
-map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap contributors').setPosition('bottomleft');
+// Top right, above the inspector: the bottom right is the minimized tutorial's tab
+map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap contributors').setPosition('topright');
 
 map.createPane('basemap').style.zIndex = '150';
 map.createPane('labels').style.zIndex = '350';
@@ -451,9 +450,10 @@ function renderInspector(force = false) {
   inspectorKey = key;
 }
 
-// Trays on the map edge: target, tools and legend. On mobile they start closed and
-// one at a time; an outside press closes them, but not in the middle of a hold.
-const trays = new Trays(() => holdingIn(document.body));
+// Trays on the map edge: target and tools. On mobile they start closed and
+// one at a time; an outside press closes them, but not in the middle of a hold
+// or on the tutorial (it opens the tray a step explains).
+const trays = new Trays((target) => holdingIn(document.body) || !!target.closest?.('.tutorial'));
 trays.exclusive = isMobile();
 trays.reset();
 
@@ -614,6 +614,7 @@ function toMainMenu() {
   setPlaying(false);
   showMission(null);
   tutorialGuide.stop();
+  restoreOwnSettings(); // a shared string's or the tutorial's settings were only for that round
   title.show();
 }
 $('btn-mission-menu').addEventListener('click', toMainMenu);
@@ -628,7 +629,7 @@ gameMenu.addEventListener('click', (e) => {
   menuPopup.close();
   if (action === 'main') toMainMenu();
   else if (tutorialRound) void startTutorial();
-  else void newRound(roundSeed); // same seed and settings: the same round again
+  else void newRound(roundSeed, false, true); // same seed and settings: the same round again
 });
 
 /** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
@@ -651,16 +652,17 @@ let building = false;
 
 /**
  * Deals the round for `seed`; the same seed always gives the same round.
- * `tutorial` marks it as the tutorial's round. Returns false if a round was already being built.
+ * `tutorial` marks it as the tutorial's round. `keepSettings` deals it with the
+ * live settings even if they are borrowed (the tutorial's, a shared string's, or a
+ * restart of the same round); otherwise the player's own come back first.
+ * Returns false if a round was already being built.
  */
-async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean> {
+async function newRound(seed = randomSeed(), tutorial = false, keepSettings = tutorial): Promise<boolean> {
   if (!world || building) return false;
   building = true;
   setPlaying(false);
-  if (!tutorial) {
-    tutorialGuide.stop();
-    restoreOwnSettings(); // the tutorial's settings were only for its round
-  }
+  if (!tutorial) tutorialGuide.stop();
+  if (!keepSettings) restoreOwnSettings(); // borrowed settings were only for their round
   try {
     const minutes = Math.round(CLIP_SECONDS / 60);
     const step = async (status: string) => {
@@ -893,7 +895,7 @@ const sampleData = loadSamples().catch((err) => {
   return null;
 });
 
-async function boot(seed: number, tutorial = false): Promise<boolean> {
+async function boot(seed: number, tutorial = false, keepSettings = tutorial): Promise<boolean> {
   setLoading('Loading map data');
   await nextPaint();
   const osm = await osmData;
@@ -917,17 +919,17 @@ async function boot(seed: number, tutorial = false): Promise<boolean> {
   console.info(
     `Graphs: road ${world.road.nodes.length}, tram ${world.tram.nodes.length}, walk ${world.walk.nodes.length} nodes.`,
   );
-  return newRound(seed, tutorial);
+  return newRound(seed, tutorial, keepSettings);
 }
 
 let booted = false;
 
 /** The first call loads everything, after that it only deals the round. Resolves true once the round is up. */
-async function play(seed: number, tutorial = false): Promise<boolean> {
-  if (booted) return newRound(seed, tutorial);
+async function play(seed: number, tutorial = false, keepSettings = tutorial): Promise<boolean> {
+  if (booted) return newRound(seed, tutorial, keepSettings);
   booted = true;
   try {
-    return await boot(seed, tutorial);
+    return await boot(seed, tutorial, keepSettings);
   } catch (err) {
     console.error(err);
     setLoading('Failed to load. See console.');
@@ -943,14 +945,15 @@ async function startGame() {
   const scenario = title.scenario;
   await showLoadingFromTitle();
   await defaultsReady; // so the defaults file can't land on top of a shared string's settings
-  // A shared string brings its settings along; they replace the player's own
-  if (scenario?.settings) updateSettings(scenario.settings);
-  void play(scenario?.seed ?? randomSeed());
+  // A shared string brings its settings along, for its round only: the player's own stay saved
+  if (scenario?.settings) borrowSettings(scenario.settings);
+  void play(scenario?.seed ?? randomSeed(), false, !!scenario?.settings);
 }
 
 // ---------- Tutorial ----------
 const tutorialGuide = new Tutorial({
   spectro,
+  trays,
   tramsUnlocked: () => unlockedKinds.has('tram'),
   marked: () => (round ? [...markedPeds].map((i) => round!.pedestrians[i].id) : []),
   selectedPerson: () => (round && selection?.kind === 'person' ? round.pedestrians[selection.i].id : null),

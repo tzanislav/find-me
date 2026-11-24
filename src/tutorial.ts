@@ -1,14 +1,21 @@
-// Interactive tutorial on a fixed seed. A briefing box types out each step
+// Interactive tutorial on a fixed seed. The tutorial box types out each step
 // (a click skips the typing) and a dark overlay with a spotlight hole shows
 // the part of the screen the step is about; white frames point at details.
 //
 // Early steps only explain, so the overlay blocks the game and Next moves on.
-// From the spectrogram walkthrough on, the whole screen is open and steps wait
-// for the player: a step's Next button can wait on a condition, or the step
-// moves on by itself once its task is done. Conditions are polled every frame
+// From the spectrogram walkthrough on, the whole screen is open and some steps
+// wait for the player: Next stays disabled (a click says what is needed) and the
+// step moves on by itself once its task is done. Conditions are polled every frame
 // through TutorialHost, so main.ts needs no tutorial hooks of its own.
+//
+// A step can open the trays it talks about. The box can be minimized to its own
+// tab on the map's bottom edge; it comes back by itself when the step moves on.
+// On mobile, the open box closes every tray its step doesn't need.
 
+import { holdAttrs, type HoldMs } from './hold';
+import { isMobile } from './mobile';
 import type { SpectrogramView } from './spectrogram';
+import type { TrayName, Trays } from './trays';
 import { PASS_WINDOW_S, type TutorialPlan } from './tutorial-round';
 import { typewrite, type Typing } from './typewriter';
 
@@ -27,6 +34,8 @@ export const TUTORIAL_REMOVED = ['P-46200'] as const;
 /** What the tutorial reads from the game. */
 export interface TutorialHost {
   spectro: SpectrogramView;
+  /** The map's trays, for steps that explain what is in them. */
+  trays: Trays;
   /** Whether the Transportation data (trams) has been bought. */
   tramsUnlocked(): boolean;
   /** IDs of the people marked right now. */
@@ -59,12 +68,17 @@ export interface PeopleHighlight {
 
 type Area = Element | DOMRect | null;
 type Target = () => Area;
-/** Where the briefing box sits: screen centre, map centre, bottom of the map, bottom of the screen. */
-type Place = 'center' | 'map' | 'map-bottom' | 'bottom';
+/**
+ * Where the tutorial box sits: screen centre, map centre, bottom of the map,
+ * bottom of the screen, or beside the step's open tray (below the map on mobile).
+ */
+type Place = 'center' | 'map' | 'map-bottom' | 'bottom' | 'tray';
+
+type Text = string | (() => string);
 
 interface Step {
   /** A function is read when the step opens, for text that depends on the round. */
-  text: string | (() => string);
+  text: Text;
   /**
    * The dark overlay: 'all' darkens the whole screen, a target darkens all
    * but it. Either way the game is blocked. Omitted, the game is open.
@@ -73,10 +87,15 @@ interface Step {
   /** White frames around these. */
   frames?: Target[];
   place: Place;
-  /** The Next button: shown always (default), once the condition holds, or never (see `advance`). */
-  next?: boolean | (() => boolean);
-  /** Moves on by itself once this holds. */
-  advance?: () => boolean;
+  /** Trays this step explains or needs: opened when it starts. The box is narrower then. */
+  trays?: TrayName[];
+  /**
+   * What the player has to do before the tutorial goes on. Next is disabled
+   * meanwhile; clicking it shows this.
+   */
+  need?: Text;
+  /** The task is done: the step moves on by itself. */
+  done?: () => boolean;
   /** Ends the tutorial: its button says Finish and closes the box. */
   last?: boolean;
   /** People to ring on the map right now, or null for none. */
@@ -85,6 +104,7 @@ interface Step {
 
 const $ = (id: string) => document.getElementById(id);
 const q = (sel: string) => document.querySelector(sel);
+const read = (t: Text) => (typeof t === 'function' ? t() : t);
 
 /** The bounding box of several elements. */
 function union(...sels: string[]): Target {
@@ -107,6 +127,12 @@ function rectOf(area: Area): DOMRect | null {
 
 /** Space around a framed area, px. */
 const FRAME_PAD = 4;
+/** Gap between the box and a tray or screen edge, px. */
+const GAP = 16;
+/** Holding Exit tutorial ends it; a tap alone does nothing. */
+const EXIT_HOLD_MS: HoldMs = { desktop: 1000, mobile: 500 };
+/** How long the "what's needed" tooltip stays up, ms. */
+const NEED_MS = 4000;
 
 function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
   const mapPanel: Target = () => $('map-panel');
@@ -143,6 +169,7 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
   };
   const countWord = (n: number) => ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'][n] ?? String(n);
   const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
+  const candidateCount = () => (h.plan() ? countWord(h.plan()!.candidates.length) : 'the');
 
   const steps: Step[] = [
     {
@@ -159,13 +186,15 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
       text: "This is the person we are looking for. We don't have all of their information right now.",
       spot: mapPanel,
       frames: [() => $('target')],
-      place: 'map',
+      place: 'tray',
+      trays: ['target'],
     },
     {
       text: 'We have access to additional layers that we can add to the map, but they come at a cost.',
       spot: mapPanel,
       frames: [union('.energy-panel', '#intel')],
-      place: 'map',
+      place: 'tray',
+      trays: ['tools'],
     },
     {
       text: "This is the spectrogram. It's a visual representation of the sounds heard by the suspect's device.",
@@ -173,7 +202,10 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
       place: 'map-bottom',
     },
     {
-      text: 'On the horizontal axis we have the time. You can scrub through it with the mouse and zoom in with the scroll wheel.',
+      text: () =>
+        isMobile()
+          ? 'On the horizontal axis we have the time. Drag with one finger to scrub through it, and pinch with two fingers to zoom in.'
+          : 'On the horizontal axis we have the time. You can scrub through it with the mouse and zoom in with the scroll wheel.',
       spot: spectroPanel,
       frames: [() => h.spectro.areas().timeAxis],
       place: 'map-bottom',
@@ -191,9 +223,9 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
       place: 'map-bottom',
     },
     {
-      text:
+      text: () =>
         'You can see several shapes and bright spots in the recording. ' +
-        "Let's inspect the period from 0:25 to 1:13. Zoom in on it and play it (Space bar) to hear it.\n" +
+        `Let's inspect the period from 0:25 to 1:13. Zoom in on it and play it (${isMobile() ? 'the Play button' : 'Space bar'}) to hear it.\n` +
         'When you are ready, click Next.',
       frames: [span(25, 73)],
       place: 'map-bottom',
@@ -206,20 +238,22 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
     {
       text: "Let's use that to narrow our search. Purchase the Transportation data from the Data Access panel.",
       frames: [() => q('#intel-buttons > button')],
-      place: 'map-bottom',
-      next: false,
-      advance: h.tramsUnlocked,
+      place: 'tray',
+      trays: ['tools'],
+      need: 'Buy the Transportation data: hold its button in the Data Access panel.',
+      done: h.tramsUnlocked,
     },
     {
       text: () =>
         'Now we can see the exact locations of all the trams in the area. ' +
         'Move the playhead to the brightest part, where we can hear the tram, and look at the map. ' +
-        'Zoom in on the trams, select the people who are really near them (within a few meters) and mark them.' +
+        'Zoom in on the trams, select the people who are really near them (within a few meters) and mark them. ' +
         'Select a person and in the Inspector panel you can MARK them.' +
         (h.plan() ? ` There are ${countWord(h.plan()!.candidates.length)} of them.` : ''),
       frames: [span(32, 38)],
       place: 'map-bottom',
-      next: candidatesMarked,
+      need: () => `Mark ${candidateCount()} people right next to the tram at 0:35, and nobody else.`,
+      done: candidatesMarked,
       people: firstPassPeople,
     },
     {
@@ -237,7 +271,8 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
         'If there is no one left, that means you missed someone. Go back and forth between the two events.\n' +
         'Hint: you can add tags to the timeline so you can navigate it more easily.',
       place: 'map-bottom',
-      next: onlyTargetMarked,
+      need: 'Unmark everyone who is far from a tram at 1:42, until only the suspect is left marked.',
+      done: onlyTargetMarked,
       people: secondPassPeople,
     },
     {
@@ -268,26 +303,27 @@ function buildSteps(h: TutorialHost): { steps: Step[]; fail: Step } {
     {
       text: 'Keep an eye on our suspect and move the timeline to a time when they are in range of a cell tower we can access.',
       place: 'map-bottom',
-      next: h.targetInTowerRange,
+      need: 'Move the playhead to a time when the suspect is within range of a cell tower.',
+      done: h.targetInTowerRange,
     },
     {
       text: 'Select the tower they are closest to and activate Reveal User Data.',
       frames: [() => q('#inspector [data-action="reveal-data"]')],
       place: 'map-bottom',
-      next: false,
-      advance: h.targetRevealed,
+      need: 'Select the cell tower the suspect is in range of, then hold Reveal user data in the Inspector.',
+      done: h.targetRevealed,
     },
     {
       text: "Now select the suspect and let's see if they match.",
       place: 'map-bottom',
-      next: false,
-      advance: () => h.selectedPerson() === h.targetId(),
+      need: 'Select the suspect on the map.',
+      done: () => h.selectedPerson() === h.targetId(),
     },
     {
       text: () => `${h.targetFacts()} It's a match.\nWhenever you are ready, you can send out the arrest warrant.`,
       frames: [() => q('#inspector .btn-arrest')],
       place: 'map-bottom',
-      next: false,
+      need: 'Hold Arrest in the Inspector to arrest the suspect.',
       // Moving on after a correct arrest is handled for every step, see frame()
     },
     {
@@ -312,11 +348,14 @@ export class Tutorial {
   private readonly spot = document.createElement('div');
   private readonly frameEls: HTMLElement[] = [];
   private readonly box = document.createElement('div');
+  /** The minimized tutorial: a tray tab on the map's right edge. */
+  private readonly tab = document.createElement('button');
   private readonly count: HTMLElement;
   private readonly full: HTMLElement;
   private readonly typed: HTMLElement;
   private readonly textEl: HTMLElement;
   private readonly nextBtn: HTMLButtonElement;
+  private readonly needEl: HTMLElement;
   private readonly steps: Step[];
   private readonly fail: Step;
 
@@ -326,6 +365,8 @@ export class Tutorial {
   /** Bumped on every step change, so an old step's typing stops. */
   private run = 0;
   private raf = 0;
+  private needTimer = 0;
+  private minimized = false;
   /** Where the player dragged the box to; it stays there until the tutorial restarts. */
   private dragged: { left: number; top: number } | null = null;
 
@@ -338,14 +379,19 @@ export class Tutorial {
     this.box.className = 'panel tut-box';
     this.box.innerHTML = `
       <div class="tut-head" title="Drag to move">
-        <span class="title">BRIEFING</span><span class="tut-count"></span>
+        <span class="title">TUTORIAL</span><span class="tut-count"></span>
+        <button class="tut-min" title="Minimize to a tab at the bottom of the map" aria-label="Minimize">–</button>
       </div>
       <div class="tut-text"><span class="tut-full"><span></span><span class="cursor"></span></span><span class="tut-typed"><span></span><span class="cursor"></span></span></div>
       <div class="tut-actions">
-        <button class="tut-exit">Exit tutorial</button>
+        <button class="tut-exit" ${holdAttrs(EXIT_HOLD_MS)} title="Hold to exit the tutorial">Exit tutorial</button>
         <button class="tut-next">Next</button>
+        <div class="tut-need" role="status" hidden></div>
       </div>`;
-    this.root.append(this.blocker, this.spot, this.box);
+    this.tab.className = 'tut-tab';
+    this.tab.title = 'Show the tutorial';
+    this.tab.innerHTML = '<span>Tutorial</span>';
+    this.root.append(this.blocker, this.spot, this.box, this.tab);
     document.body.appendChild(this.root);
 
     this.count = this.box.querySelector('.tut-count')!;
@@ -353,13 +399,25 @@ export class Tutorial {
     this.full = this.box.querySelector('.tut-full > span')!;
     this.typed = this.box.querySelector('.tut-typed > span')!;
     this.nextBtn = this.box.querySelector('.tut-next')!;
+    this.needEl = this.box.querySelector('.tut-need')!;
 
     this.nextBtn.addEventListener('click', () => {
       this.nextBtn.blur(); // so Space plays the clip instead of pressing Next again
-      if (this.step?.last) this.stop();
+      const step = this.step;
+      if (!step) return;
+      // Waiting on the player: say what is needed instead
+      if (step.need) return this.showNeed(read(step.need), 'right');
+      if (step.last) this.stop();
       else this.show(this.index + 1);
     });
-    this.box.querySelector('.tut-exit')!.addEventListener('click', () => this.stop());
+    // Exit is a hold (hold.ts), so a stray tap can't end the tutorial; a plain tap says so
+    const exit = this.box.querySelector<HTMLButtonElement>('.tut-exit')!;
+    exit.addEventListener('hold', () => this.stop());
+    exit.addEventListener('click', () => {
+      if (this.step) this.showNeed('Hold the button to exit the tutorial.', 'left');
+    });
+    this.box.querySelector('.tut-min')!.addEventListener('click', () => this.setMinimized(true));
+    this.tab.addEventListener('click', () => this.setMinimized(false));
     // A click on the box or the dark overlay shows the whole text
     this.box.addEventListener('click', (e) => {
       if (!(e.target as HTMLElement).closest('button')) this.typing?.skip();
@@ -374,7 +432,7 @@ export class Tutorial {
 
   /** True while a step explains part of the screen and the game is shut behind the overlay. */
   get blocking(): boolean {
-    return this.step?.spot !== undefined;
+    return this.step?.spot !== undefined && !this.minimized;
   }
 
   start() {
@@ -390,6 +448,7 @@ export class Tutorial {
     this.run++;
     this.step = null;
     this.typing = null;
+    this.hideNeed();
     cancelAnimationFrame(this.raf);
     this.root.classList.add('hidden');
   }
@@ -403,19 +462,56 @@ export class Tutorial {
   private present(step: Step) {
     this.step = step;
     const run = ++this.run;
-    const text = typeof step.text === 'function' ? step.text() : step.text;
+    const text = read(step.text);
     this.full.textContent = text; // invisible, with its own cursor: holds the box at its final size so nothing shifts
     const node = document.createTextNode('');
     this.typed.replaceChildren(node);
     this.textEl.classList.add('typing');
     this.nextBtn.textContent = step.last ? 'Finish' : 'Next';
+    // Waiting on the player: Next stays in place, disabled; a click says what is needed
+    this.nextBtn.classList.toggle('waiting', !!step.need);
+    this.nextBtn.setAttribute('aria-disabled', String(!!step.need));
+    this.box.classList.toggle('narrow', !!step.trays?.length);
     this.root.classList.toggle('blocking', step.spot !== undefined);
+    this.hideNeed();
     const typing = typewrite(node, text, { live: () => run === this.run });
     this.typing = typing;
     void typing.done.then((finished) => {
       if (finished && run === this.run) this.textEl.classList.remove('typing');
     });
+    // A new step always brings the box back, with the trays it talks about
+    this.setMinimized(false);
     this.update();
+  }
+
+  /** Minimized, the box and the dark overlay go; frames and rings stay, and a tab brings it back. */
+  private setMinimized(min: boolean) {
+    this.minimized = min;
+    this.root.classList.toggle('minimized', min);
+    this.hideNeed();
+    if (!min) this.syncTrays();
+  }
+
+  /** Opens the step's trays. On mobile the open box also closes every other tray. */
+  private syncTrays() {
+    const { trays } = this.host;
+    const wanted = this.step?.trays ?? [];
+    if (isMobile()) trays.closeAll();
+    wanted.forEach((name) => trays.set(name, true));
+  }
+
+  /** The tooltip over the box's buttons, at the side of the button it is about. */
+  private showNeed(text: string, side: 'left' | 'right') {
+    this.needEl.textContent = text;
+    this.needEl.classList.toggle('left', side === 'left');
+    this.needEl.hidden = false;
+    clearTimeout(this.needTimer);
+    this.needTimer = window.setTimeout(() => this.hideNeed(), NEED_MS);
+  }
+
+  private hideNeed() {
+    clearTimeout(this.needTimer);
+    this.needEl.hidden = true;
   }
 
   private readonly frame = () => {
@@ -428,8 +524,8 @@ export class Tutorial {
         this.present(this.fail);
         this.count.textContent = '';
       }
-    } else if (this.step.advance?.()) {
-      this.show(this.index + 1);
+    } else if (this.step.done?.()) {
+      this.show(this.index + 1); // the task is done: on to the next step, box back up
     }
     this.update();
     this.raf = requestAnimationFrame(this.frame);
@@ -465,29 +561,47 @@ export class Tutorial {
 
     this.host.highlight(step.people?.() ?? null);
 
-    const next = step.next ?? true;
-    this.nextBtn.hidden = !(typeof next === 'function' ? next() : next);
-
-    this.placeBox(step.place);
+    if (this.minimized) this.placeTab();
+    else this.placeBox(step);
   }
 
-  private placeBox(place: Place) {
+  /** The minimized tab: on the map's bottom edge, at the right. */
+  private placeTab() {
+    const map = $('map-panel')!.getBoundingClientRect();
+    const r = this.tab.getBoundingClientRect();
+    this.tab.style.left = `${map.right - r.width - 12}px`;
+    this.tab.style.top = `${map.bottom - r.height}px`;
+  }
+
+  private placeBox(step: Step) {
     const s = this.box.style;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const r = this.box.getBoundingClientRect();
     if (this.dragged) {
       // Keep it on screen if the window shrank
-      const r = this.box.getBoundingClientRect();
-      s.left = `${Math.min(Math.max(0, this.dragged.left), Math.max(0, window.innerWidth - r.width))}px`;
-      s.top = `${Math.min(Math.max(0, this.dragged.top), Math.max(0, window.innerHeight - r.height))}px`;
+      s.left = `${Math.min(Math.max(0, this.dragged.left), Math.max(0, vw - r.width))}px`;
+      s.top = `${Math.min(Math.max(0, this.dragged.top), Math.max(0, vh - r.height))}px`;
       s.transform = 'none';
       return;
     }
     const map = $('map-panel')!.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const place = step.place;
+    if (place === 'tray') {
+      // Beside the open tray, so the tray stays readable; on a phone there is no room, so below the map
+      const trayRight = Math.max(map.left, ...(step.trays ?? []).map((n) => this.host.trays.el(n).getBoundingClientRect().right));
+      const fitsBeside = trayRight + GAP + r.width <= vw - 8;
+      const left = fitsBeside ? trayRight + GAP : (vw - r.width) / 2;
+      const top = fitsBeside ? map.top + (map.height - r.height) / 2 : map.bottom + 8;
+      s.left = `${Math.max(8, left)}px`;
+      s.top = `${Math.min(Math.max(8, top), vh - r.height - 8)}px`;
+      s.transform = 'none';
+      return;
+    }
     const [x, y, dy] =
       place === 'center' ? [vw / 2, vh / 2, '-50%']
       : place === 'map' ? [map.left + map.width / 2, map.top + map.height / 2, '-50%']
-      : place === 'map-bottom' ? [map.left + map.width / 2, map.bottom - 16, '-100%']
+      : place === 'map-bottom' ? [map.left + map.width / 2, map.bottom - GAP, '-100%']
       : [vw / 2, vh - 32, '-100%'];
     s.left = `${x}px`;
     s.top = `${y}px`;
@@ -499,7 +613,7 @@ export class Tutorial {
     const head = this.box.querySelector<HTMLElement>('.tut-head')!;
     let grab: { x: number; y: number } | null = null;
     head.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return; // the minimize button
       const r = this.box.getBoundingClientRect();
       grab = { x: e.clientX - r.left, y: e.clientY - r.top };
       head.setPointerCapture(e.pointerId);
@@ -508,7 +622,7 @@ export class Tutorial {
     head.addEventListener('pointermove', (e) => {
       if (!grab) return;
       this.dragged = { left: e.clientX - grab.x, top: e.clientY - grab.y };
-      this.placeBox('center');
+      if (this.step) this.placeBox(this.step);
     });
     const end = () => (grab = null);
     head.addEventListener('pointerup', end);

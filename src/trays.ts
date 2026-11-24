@@ -1,11 +1,11 @@
 // Trays on the map edge (index.html [data-tray]): a tab that slides its panel out.
-// Target and Tools sit on the left, the legend bottom right.
+// Target and Tools sit on the left (the legend is in the field guide).
 //
 // Desktop: every tray starts open and each one only closes from its own tab.
 // Mobile (`exclusive`): they start closed, only one is open at a time, and a press anywhere else closes it.
 
-export type TrayName = 'target' | 'tools' | 'legend';
-export const TRAY_NAMES: TrayName[] = ['target', 'tools', 'legend'];
+export type TrayName = 'target' | 'tools';
+export const TRAY_NAMES: TrayName[] = ['target', 'tools'];
 
 export class Trays {
   /** One tray at a time (mobile). */
@@ -13,8 +13,8 @@ export class Trays {
   private readonly openSet = new Set<TrayName>();
   private readonly listeners: ((name: TrayName, open: boolean) => void)[] = [];
 
-  /** `keepOpen` is asked before an outside press closes the trays (e.g. while a hold is running). */
-  constructor(keepOpen: () => boolean = () => false) {
+  /** `keepOpen` is asked before an outside press closes the trays (e.g. while a hold is running, or a press on the tutorial). */
+  constructor(keepOpen: (target: Element) => boolean = () => false) {
     for (const name of TRAY_NAMES) {
       this.tab(name).addEventListener('click', () => this.toggle(name));
       this.apply(name);
@@ -25,7 +25,7 @@ export class Trays {
     document.addEventListener(
       'pointerdown',
       (e) => {
-        if (!this.exclusive || !this.anyOpen() || keepOpen()) return;
+        if (!this.exclusive || !this.anyOpen() || keepOpen(e.target as Element)) return;
         const inOpenTray = TRAY_NAMES.some((n) => this.openSet.has(n) && this.el(n).contains(e.target as Node));
         if (!inOpenTray) this.closeAll();
       },

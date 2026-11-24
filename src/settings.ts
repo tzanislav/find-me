@@ -219,26 +219,44 @@ export function onSettingsChange(fn: () => void) {
 const notify = () => listeners.forEach((fn) => fn());
 
 /**
- * Settings the tutorial put in place for its round without saving them (see
- * borrowSettings); the player's own come back with restoreOwnSettings.
+ * Settings put in place for a round without saving them (see borrowSettings):
+ * the tutorial's, or those of a shared "<seed>-<code>" string. The player's own
+ * come back with restoreOwnSettings.
  */
 let borrowed = false;
 
-function commit() {
-  Object.assign(settings, sanitize(settings));
-  borrowed = false; // a change the player makes is theirs now, whatever was in place before
+function save(s: Settings) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
   } catch (err) {
     console.error('Settings failed to save', err);
   }
+}
+
+function commit() {
+  Object.assign(settings, sanitize(settings));
+  borrowed = false;
+  save(settings);
   notify();
 }
 
-/** Applies `change` to the live settings, then validates, saves and notifies. */
+/**
+ * Applies `change` to the live settings, then validates, saves and notifies.
+ * While settings are borrowed, the change goes to the live ones and to the
+ * player's own, which are saved; the borrowed values themselves are not.
+ */
 export function updateSettings(change: (s: Settings) => void) {
+  if (!borrowed) {
+    change(settings);
+    commit();
+    return;
+  }
+  const own = load();
+  change(own);
+  save(sanitize(own));
   change(settings);
-  commit();
+  Object.assign(settings, sanitize(settings));
+  notify();
 }
 
 /**
@@ -276,7 +294,7 @@ export async function loadDefaultSettings(): Promise<void> {
   }
 }
 
-/** Puts `change` in place for now without saving it, e.g. the tutorial's settings for its round. */
+/** Puts `change` in place for now without saving it, e.g. the tutorial's or a shared string's settings for its round. */
 export function borrowSettings(change: (s: Settings) => void) {
   change(settings);
   Object.assign(settings, sanitize(settings));
@@ -424,7 +442,7 @@ function decodeScenario(code: string): ((s: Settings) => void) | null {
 
 export interface Scenario {
   seed: number;
-  /** Sets the shared settings (pass to updateSettings), or null for a bare seed, which keeps the player's own. */
+  /** Sets the shared settings (pass to borrowSettings), or null for a bare seed, which keeps the player's own. */
   settings: ((s: Settings) => void) | null;
 }
 
