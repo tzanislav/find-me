@@ -27,7 +27,7 @@ html, body {
 
 #app {
   display: grid;
-  grid-template-rows: 2fr 1fr; /* map 2/3, spectrogram 1/3 */
+  grid-template-rows: 13fr 7fr; /* map 65%, spectrogram and bottom bar 35% */
   height: 100vh;
 }
 
@@ -38,53 +38,77 @@ html, body {
 
 .map-overlay { position: absolute; z-index: 1000; }
 .top-right { top: 12px; right: 12px; }
-.bottom-right { bottom: 26px; right: 12px; }
 .top-left { top: 12px; left: 12px; }
-.bottom-left { bottom: 26px; left: 12px; } /* clear of the seed label */
 
-/* The round's seed string, in the corner like the map attribution */
-#seed-label {
-  bottom: 0;
+
+/* ---------- Trays (trays.ts): a tab on the map edge slides its panel out ---------- */
+/* Left column: Target, then Tools. Never runs past the map; an open tray's body scrolls.
+   The empty space around the trays lets clicks through to the map. */
+.tray-col {
   left: 0;
-  max-width: 50%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 0 5px;
-  font-size: 12px;
-  line-height: 1.4;
-  background: rgba(2, 3, 15, 0.7);
-  color: var(--muted);
-  cursor: pointer;
-}
-#seed-label:empty { display: none; }
-#seed-label:hover { color: var(--text); }
-
-/* Shown once police or ambulance data is bought */
-#siren-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-height: calc(100% - 12px - 22px); /* top gap, map attribution */
   pointer-events: none;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  padding: 5px 9px;
 }
-#siren-note[hidden] { display: none; }
-/* Keep the left panels clear of the note while it shows */
-#map-panel:has(#siren-note:not([hidden])) .left-cols { max-height: calc(100% - 24px - 52px); }
+.tray { display: flex; min-height: 0; pointer-events: none; }
+.tray-left { flex: 0 1 auto; max-width: 100%; } /* body stretches to the tray's (shrunk) height */
+.tray-body { display: none; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; pointer-events: auto; }
+.tray-body > .panel { flex: none; }
+.tray.open .tray-body { display: flex; }
+.tray-left.open .tray-body { animation: tray-in-left 0.18s ease-out; }
+.tray-bottom.open .tray-body { animation: tray-in-up 0.18s ease-out; }
+@keyframes tray-in-left { from { transform: translateX(-40px); opacity: 0; } }
+@keyframes tray-in-up { from { transform: translateY(30px); opacity: 0; } }
 
-/* Side columns: panels stacked, the column never runs past the map */
-.left-col,
-.right-col { display: flex; flex-direction: column; gap: 10px; }
-/* Two columns on the left: tools, then the field guide. The columns stretch
-   to the wrapper's height (capped at the map), so their panels shrink to fit;
-   the empty space around the panels lets clicks through to the map. */
-.left-cols { display: flex; gap: 10px; max-height: calc(100% - 12px - 26px); pointer-events: none; } /* top gap, seed label */
-.left-col { align-items: flex-start; pointer-events: none; }
-.left-col > .panel { pointer-events: auto; }
-.right-col { width: 320px; max-height: calc(100% - 24px - 200px); } /* clears the legend */
-.left-col > .panel,
+.tray-tab {
+  --tab: var(--cyan);
+  flex: none;
+  align-self: flex-start;
+  padding: 14px 0;
+  width: 24px;
+  pointer-events: auto;
+  background: var(--panel);
+  color: var(--tab);
+  border: 1px solid var(--tab);
+  border-left: none; /* flush with the map edge */
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 6px var(--tab);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--tab) 35%, transparent);
+}
+/* Vertical, reading bottom to top */
+.tray-left .tray-tab span { display: block; writing-mode: vertical-rl; transform: rotate(180deg); }
+.tray-tab:hover:not(:disabled) { border-color: var(--tab); color: #fff; box-shadow: 0 0 12px color-mix(in srgb, var(--tab) 60%, transparent); }
+.tray.open .tray-tab { color: #fff; background: color-mix(in srgb, var(--tab) 18%, var(--void)); }
+.tray-red .tray-tab { --tab: var(--red); }
+
+/* Legend: bottom right, a horizontal tab with the panel above it */
+.tray-bottom {
+  bottom: 0;
+  right: 12px;
+  flex-direction: column;
+  align-items: flex-end;
+  max-height: calc(100% - 12px);
+}
+.tray-bottom .tray-tab { align-self: flex-end; width: auto; padding: 3px 14px; border: 1px solid var(--tab); border-bottom: none; }
+.tray-bottom .tray-body { margin-bottom: 6px; }
+
+/* ---------- Inspector (right): only while something is selected ---------- */
+.right-col { display: flex; flex-direction: column; width: 320px; max-height: calc(100% - 24px - 34px); } /* clears the legend tab */
+#map-panel:has([data-tray='legend'].open) .right-col { max-height: calc(100% - 24px - 290px); } /* and the open legend */
 .right-col > .panel { flex: 0 1 auto; min-height: 0; }
+#side.hidden { display: none; }
+#side { animation: tray-in-right 0.18s ease-out; }
+#side > .section-label:first-child { border-top: none; padding-top: 0; }
+@keyframes tray-in-right { from { transform: translateX(40px); opacity: 0; } }
+
+/* Tools tray: zone toggle and New round */
+.round-panel { gap: 8px; }
+.round-panel button { align-self: flex-start; }
 
 /* ---------- Target profile (left, top) ---------- */
 #target { width: 260px; flex: none; border-color: rgba(255, 59, 92, 0.55); box-shadow: 0 0 18px rgba(255, 59, 92, 0.2), inset 0 0 12px rgba(255, 59, 92, 0.1); }
@@ -116,7 +140,7 @@ html, body {
 .intel-btn.owned .cost::before { content: none; }
 
 /* Hold-to-confirm (hold.ts): the fill grows with --hold from 0 to 1 */
-button[data-hold] { position: relative; isolation: isolate; user-select: none; touch-action: none; }
+button[data-hold] { position: relative; isolation: isolate; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
 button[data-hold]::after {
   content: '';
   position: absolute;
@@ -148,12 +172,36 @@ button[data-hold]::after {
   transition: width 0.3s;
 }
 
-/* ---------- Field guide (left, under data access) ---------- */
-#guide { width: 360px; overflow-y: auto; }
-#guide.collapsed { width: auto; }
-#guide.collapsed .guide-body { display: none; }
-.guide-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.guide-toggle { padding: 0 8px; line-height: 18px; }
+/* ---------- Field guide overlay (bottom left of the map, opened by the bottom bar's ?) ---------- */
+.guide-overlay {
+  left: 12px;
+  bottom: 24px; /* clear of the map attribution */
+  z-index: 1100; /* over the left panels */
+  width: min(380px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  min-height: 0;
+}
+.guide-overlay.hidden { display: none; }
+/* Solid (beats .panel's see-through background): they sit over other panels */
+.guide-overlay.panel,
+.bar-popup.panel { background: rgba(4, 8, 32, 0.97); }
+.guide-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; }
+.guide-close { padding: 0 8px; font-size: 16px; line-height: 20px; }
+.guide-scroll { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 0; }
+/* Shown once police or ambulance data is bought */
+.siren-note { font-size: 12px; color: var(--amber); text-shadow: 0 0 6px rgba(255, 196, 61, 0.5); }
+.siren-note[hidden] { display: none; }
+/* The round's seed string: click to copy */
+#seed-label {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  border-top: 1px solid rgba(80, 130, 255, 0.25);
+  padding-top: 6px;
+}
+#seed-label:empty { display: none; }
+#seed-label:hover { color: var(--text); }
 .guide-body { display: flex; flex-direction: column; gap: 7px; }
 .guide-label {
   font-size: 10px;
@@ -317,27 +365,140 @@ button[data-hold]::after {
   box-shadow: 0 -4px 20px rgba(30, 70, 255, 0.2);
   background: var(--void);
 }
-#spectro-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  border-bottom: 1px solid rgba(80, 130, 255, 0.2);
-  flex-wrap: wrap;
-  text-transform: uppercase;
-  font-size: 12px;
+#spectro-wrap { position: relative; flex: 1; min-height: 0; }
+#spectro { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+
+/* View scrollbar (spectro-scrollbar.ts): dim line for the clip, bright bar for the slice in view */
+.vscroll { position: relative; flex: none; height: 18px; touch-action: none; cursor: pointer; }
+body.mobile .vscroll { height: 26px; }
+.vscroll-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  background: rgba(90, 140, 255, 0.3);
 }
+.vscroll-thumb {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+  cursor: grab;
+}
+.vscroll.dragging .vscroll-thumb { cursor: grabbing; box-shadow: 0 0 12px var(--cyan), 0 0 3px #fff; }
+/* Grab areas taller than what is drawn */
+.vscroll-thumb::before { content: ''; position: absolute; left: 0; right: 0; top: -9px; bottom: -9px; }
+.vscroll-handle {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 0 6px var(--cyan);
+  cursor: ew-resize;
+}
+.vscroll-handle[data-edge='left'] { left: -2px; }
+.vscroll-handle[data-edge='right'] { right: -2px; }
+.vscroll-handle::before { content: ''; position: absolute; inset: -9px -10px; }
+
+/* ---------- Bottom bar: ? and time | Play | tag, sound, music ---------- */
+/* Equal side columns keep Play centred on the bar whatever sits beside it */
+#bottom-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(80, 130, 255, 0.2);
+  flex: none;
+}
+.bar-side { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bar-left #time-readout { margin-left: auto; }
+.bar-right .tag-wrap { margin-right: auto; }
 #time-readout {
   font-family: var(--display);
   font-variant-numeric: tabular-nums;
-  min-width: 70px;
+  font-size: 13px;
   color: #fff;
   text-shadow: 0 0 8px var(--cyan);
+  white-space: nowrap;
 }
-.sep { width: 1px; height: 18px; background: var(--line); }
-.hint { color: var(--muted); margin-left: auto; font-size: 11px; text-transform: none; }
-#spectro-wrap { position: relative; flex: 1; min-height: 0; }
-#spectro { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--cyan);
+}
+.icon-btn svg { display: block; filter: drop-shadow(0 0 3px currentColor); }
+.icon-btn.on { border-color: var(--cyan); color: #fff; box-shadow: 0 0 8px rgba(46, 230, 255, 0.5); }
+.guide-btn { width: 26px; height: 26px; font-family: var(--display); font-size: 13px; text-shadow: 0 0 6px currentColor; }
+.play-btn {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--cyan);
+  color: var(--cyan);
+  box-shadow: 0 0 12px rgba(46, 230, 255, 0.45), inset 0 0 10px rgba(46, 230, 255, 0.2);
+}
+.play-btn svg { display: block; filter: drop-shadow(0 0 4px currentColor); }
+.play-btn[aria-label='Play'] svg { margin-left: 3px; } /* the triangle's weight sits left of its box */
+/* Sound and music: dimmed with a strike when off */
+.toggle-icon { position: relative; }
+.toggle-icon[aria-pressed='false'] { color: var(--muted); }
+.toggle-icon[aria-pressed='false'] svg { opacity: 0.5; filter: none; }
+.toggle-icon[aria-pressed='false']::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 2px;
+  background: var(--red);
+  box-shadow: 0 0 4px var(--red);
+  transform: rotate(-45deg);
+}
+
+/* Bottom bar popups (tag picker, game menu): pop up above their button */
+.tag-wrap,
+.menu-wrap { position: relative; }
+.bar-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  gap: 4px;
+  padding: 6px;
+  min-width: 180px;
+}
+.bar-popup.hidden { display: none; }
+.bar-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  text-align: left;
+  border-color: transparent;
+  background: none;
+  font-size: 11px;
+  text-shadow: 0 0 6px currentColor;
+}
+.bar-option svg { flex: none; filter: drop-shadow(0 0 3px currentColor); }
+.game-menu { left: 0; transform: none; min-width: 150px; }
+.game-menu .bar-option { color: var(--text); text-shadow: none; }
+.tag-clear { justify-content: center; color: var(--muted); text-shadow: none; border-top: 1px solid rgba(80, 130, 255, 0.25); margin-top: 2px; }
 
 button, select {
   background: rgba(10, 20, 70, 0.6);
@@ -549,8 +710,6 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
 .locked-note { margin-top: 6px; }
 .btn-arrest { border-color: var(--red); color: var(--red); text-shadow: 0 0 6px var(--red); }
 .btn-arrest:hover:not(:disabled) { border-color: var(--red); color: #fff; box-shadow: 0 0 10px rgba(255, 59, 92, 0.6); }
-.win { color: var(--green); text-shadow: 0 0 6px var(--green); letter-spacing: 0.1em; }
-#result:empty { display: none; }
 
 
 /* ---------- Full-screen overlays: loading, mission result ---------- */
@@ -884,3 +1043,21 @@ button.conn-row:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--cyan); 
 .tut-actions .tut-next { font-size: 13px; padding: 5px 20px; }
 .tut-actions .tut-next[hidden] { display: none; }
 .tut-actions .tut-exit { margin-right: auto; color: var(--muted); }
+
+/* The game's name at the top of the field guide */
+.guide-game { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.18em; color: #fff; text-shadow: 0 0 8px var(--blue); }
+
+/* ---------- Mobile mode (mobile.ts toggles body.mobile) ---------- */
+/* Follows the browser's address bar, so the bottom bar stays on screen */
+body.mobile #app { height: 100dvh; }
+body.mobile .right-col { width: min(320px, 85vw); }
+/* Bigger tabs for fingers */
+body.mobile .tray-left .tray-tab { width: 30px; padding: 18px 0; font-size: 11px; }
+body.mobile .tray-bottom .tray-tab { padding: 6px 18px; font-size: 11px; }
+/* People: a larger invisible tap area around the same small dot */
+.ped-hit { display: none; }
+body.mobile .ped-hit { display: block; position: absolute; inset: -9px; border-radius: 50%; }
+/* Text for one mode only */
+.mobile-only { display: none; }
+body.mobile .mobile-only { display: inline; }
+body.mobile .desktop-only { display: none; }

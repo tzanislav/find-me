@@ -3,7 +3,7 @@ import '@fontsource/orbitron/700.css';
 import '@fontsource/share-tech-mono/400.css';
 import './style.css';
 import L from 'leaflet';
-import { BOUNDS, dist, toLatLng, type Vec } from './geo';
+import { BOUNDS, toLatLng, type Vec } from './geo';
 import {
   CLIP_SECONDS,
   KINDS,
@@ -17,9 +17,9 @@ import {
   type SourceKind,
   type Track,
 } from './sources';
-import { simulate, type LoopLengths, type SpectralProfiles } from './sim';
+import type { LoopLengths, SpectralProfiles } from './sim';
+import { computeRound, setRoundAssets } from './round-compute';
 import { AUDIO_SAMPLE_RATE } from './audio/constants';
-import { renderListenerAudio, type AudioAssets } from './audio/render';
 import { profileLoop } from './audio/profile';
 import { loadSamples } from './audio/samples';
 import { loadNoiseMap } from './noisemap';
@@ -32,8 +32,13 @@ import { loadOsm } from './osm';
 import { buildWorld, generateRound, type Round, type World } from './scenario';
 import type { Pedestrian } from './pedestrians';
 import { TOWER_COLOR, TOWER_RANGE_M, inRange, towerIconSvg, type Tower } from './towers';
-import { emptyHtml, fullName, genderLabel, personHtml, targetHtml, towerHtml } from './inspector';
-import { holdingIn } from './hold';
+import { genderLabel, personHtml, targetHtml, towerHtml } from './inspector';
+import { holdingIn, type HoldMs } from './hold';
+import { isMobile, onMobileChange } from './mobile';
+import { Trays } from './trays';
+import { SpectroScrollbar } from './spectro-scrollbar';
+import { closePopups, popup } from './popup';
+import { menuIcon, musicIcon, pauseIcon, playIcon, soundIcon, tagIcon } from './ui-icons';
 import { TitleScreen } from './title';
 import { randomSeed } from './rng';
 import {
@@ -53,7 +58,6 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 // ---------- State ----------
 let world: World | null = null;
-let audioAssets: AudioAssets | null = null;
 /** Recorded sources the spectrogram draws from their actual recording. */
 let spectralProfiles: SpectralProfiles = {};
 /** Loop lengths of recordings whose spectrogram is hand-drawn in step with them (police wail). */
@@ -95,7 +99,8 @@ const map = L.map('map', {
 /** Start this many zoom levels closer than "whole play box fits". */
 const START_ZOOM_IN = 0.75;
 map.setView(box.getCenter(), map.getBoundsZoom(box) + START_ZOOM_IN);
-map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap contributors');
+// Bottom left: the legend tray's tab sits bottom right
+map.attributionControl.setPrefix(false).addAttribution('&copy; OpenStreetMap contributors').setPosition('bottomleft');
 
 map.createPane('basemap').style.zIndex = '150';
 map.createPane('labels').style.zIndex = '350';
@@ -207,8 +212,9 @@ function buildSourceLayers(sources: SoundSource[]) {
 
 // ---------- Energy and data access ----------
 const START_ENERGY = 100;
-const INTEL_HOLD_MS = 1000;
-const ARREST_HOLD_MS = 2000;
+/** Hold-to-confirm times. Shorter on mobile, where some browsers take a long press for a right click. */
+const INTEL_HOLD_MS: HoldMs = { desktop: 1000, mobile: 500 };
+const ARREST_HOLD_MS: HoldMs = { desktop: 2000, mobile: 900 };
 /** Cell tower action: names and numbers of everyone within its range right now. */
 const REVEAL_DATA_COST = 20;
 
@@ -234,7 +240,8 @@ const unlockedKinds = new Set<SourceKind>();
 const intelButtons = INTEL.map((intel, i) => {
   const btn = document.createElement('button');
   btn.className = 'intel-btn';
-  btn.dataset.hold = String(INTEL_HOLD_MS);
+  btn.dataset.hold = String(INTEL_HOLD_MS.desktop);
+  btn.dataset.holdMobile = String(INTEL_HOLD_MS.mobile);
   btn.title = intel.tip;
   btn.innerHTML = `<span>${intel.label}</span><span class="cost">${intel.cost}</span>`;
   btn.addEventListener('hold', () => buyIntel(i));
@@ -346,7 +353,7 @@ function buildPedestrianLayer(people: Pedestrian[]) {
   pedLayer.clearLayers();
   pedMarkers = people.map((p, i) =>
     L.marker(ll(positionAt(p, time)), {
-      icon: L.divIcon({ className: 'ped', html: '<span class="ped-dot"></span>', iconSize: [14, 14] }),
+      icon: L.divIcon({ className: 'ped', html: '<span class="ped-hit"></span><span class="ped-dot"></span>', iconSize: [14, 14] }),
       pane: 'people',
       riseOnHover: true,
     })
@@ -366,7 +373,7 @@ const nearbyTips = new Set<number>();
 /** Opens the tooltips of marked people and people near the cursor, and closes the rest. Only touches markers whose state changes. */
 function syncNearbyTips() {
   const near = new Set<number>(markedPeds);
-  if (mouseLatLng) {
+  if (mouseLatLng && !isMobile()) { // no hover on touch
     pedMarkers.forEach((m, i) => {
       if (mouseLatLng!.distanceTo(m.getLatLng()) <= NEARBY_TIP_RADIUS_M) near.add(i);
     });
@@ -413,7 +420,7 @@ let inspectorKey = '';
 function renderInspector(force = false) {
   if (!force && holdingIn(inspectorEl)) return; // don't swap a button out from under a hold
   if (!round || !selection) {
-    inspectorEl.innerHTML = emptyHtml();
+    inspectorEl.innerHTML = '';
     inspectorKey = '';
     return;
   }
@@ -444,8 +451,34 @@ function renderInspector(force = false) {
   inspectorKey = key;
 }
 
+// Trays on the map edge: target, tools and legend. On mobile they start closed and
+// one at a time; an outside press closes them, but not in the middle of a hold.
+const trays = new Trays(() => holdingIn(document.body));
+trays.exclusive = isMobile();
+trays.reset();
+
+/**
+ * The inspector shows only while something is selected. On mobile an open Target or
+ * Tools tray would cover it, so it steps aside until the tray closes.
+ */
+const sidePanel = $('side');
+function syncSidePanel() {
+  const coveredByTray = isMobile() && trays.anyOpen(['target', 'tools']);
+  sidePanel.classList.toggle('hidden', !selection || coveredByTray);
+}
+trays.onChange(syncSidePanel);
+
+onMobileChange((mobile) => {
+  trays.exclusive = mobile;
+  trays.reset();
+  syncSidePanel();
+  syncNearbyTips();
+});
+
 function select(sel: Selection) {
   selection = sel;
+  if (sel && isMobile()) trays.closeAll(); // the inspector takes over
+  syncSidePanel();
   selectedRange?.remove();
   selectedRange = null;
   if (round && sel?.kind === 'tower') {
@@ -499,8 +532,11 @@ $('legend').innerHTML =
   '<div class="legend-item" style="color:#fff"><span class="legend-dot"></span><span>Pedestrian</span></div>' +
   '<div class="legend-item mark-legend"><span class="mark-glyph">◆</span><span>Marked</span></div>';
 
-// Field guide: Doppler toy and reference sirens, for learning to read the spectrogram
+// Field guide: Doppler toy and reference sirens, for learning to read the spectrogram.
+// An overlay on the map behind the bottom bar's ? button.
 new FieldGuide($('guide'));
+const guidePopup = popup($('btn-guide'), $('guide-overlay'));
+$('btn-guide-close').addEventListener('click', () => guidePopup.close());
 
 // ---------- Spectrogram ----------
 const spectro = new SpectrogramView(
@@ -511,14 +547,9 @@ const spectro = new SpectrogramView(
   },
   settings.display.logFrequency,
 );
-const logToggle = $<HTMLInputElement>('toggle-log-freq');
-logToggle.checked = settings.display.logFrequency;
-logToggle.addEventListener('change', () => updateSettings((s) => (s.display.logFrequency = logToggle.checked)));
-// Also follows a settings reset or import
-onSettingsChange(() => {
-  logToggle.checked = settings.display.logFrequency;
-  spectro.setLogFrequency(settings.display.logFrequency);
-});
+new SpectroScrollbar($('spectro-scroll'), spectro);
+// The log frequency scale is set in Settings (also follows a reset or import)
+onSettingsChange(() => spectro.setLogFrequency(settings.display.logFrequency));
 
 // ---------- Rounds ----------
 // ---------- Loading overlay ----------
@@ -545,6 +576,8 @@ function showMission(success: boolean | null) {
 
 /** The round's seed with the settings it was dealt with, to share (see scenarioString). */
 let roundString = '';
+/** The round's seed, for Restart. */
+let roundSeed = 0;
 const seedLabel = $('seed-label');
 const copySeedBtn = $<HTMLButtonElement>('btn-mission-copy-seed');
 
@@ -576,11 +609,26 @@ seedLabel.addEventListener(
 
 $('btn-mission-hide').addEventListener('click', () => showMission(null));
 $('btn-mission-retry').addEventListener('click', () => void (tutorialRound ? startTutorial() : newRound()));
-$('btn-mission-menu').addEventListener('click', () => {
+/** Leaves the round for the title screen. */
+function toMainMenu() {
   setPlaying(false);
   showMission(null);
   tutorialGuide.stop();
   title.show();
+}
+$('btn-mission-menu').addEventListener('click', toMainMenu);
+
+// Game menu (burger, bottom left): restart this round from the start, or leave for the title
+const gameMenu = $('game-menu');
+const menuPopup = popup($('btn-menu'), gameMenu);
+$('btn-menu').innerHTML = menuIcon(20);
+gameMenu.addEventListener('click', (e) => {
+  const action = (e.target as HTMLElement).closest<HTMLElement>('[data-menu]')?.dataset.menu;
+  if (!action) return;
+  menuPopup.close();
+  if (action === 'main') toMainMenu();
+  else if (tutorialRound) void startTutorial();
+  else void newRound(roundSeed); // same seed and settings: the same round again
 });
 
 /** Let the browser paint (e.g. the loading overlay) before the next heavy step. */
@@ -632,17 +680,16 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     // The tutorial's round has its crowd thinned around the tram passes it teaches with
     const plan = tutorial ? prepareTutorialRound(next, TUTORIAL_CANDIDATES, TUTORIAL_REMOVED) : null;
     await step(`Simulating ${minutes} minutes of city sound`);
-    const spec = timed('Spectrogram simulated', () => simulate(next.sources, next.target, seed, spectralProfiles, loopLengths, audioAssets?.noiseMap ?? null));
-    let audio: Float32Array | null = null;
-    if (audioAssets) {
-      await step('Rendering the recording');
-      audio = timed('Audio rendered', () => renderListenerAudio(next.sources, next.target, seed, audioAssets!));
-    }
+    // In a worker (round-compute.ts): this is the slow part, tens of seconds on a phone
+    const { spec, audio } = await computeRound(next.sources, next.target, seed, spectralProfiles, loopLengths, () =>
+      setLoading('Rendering the recording'),
+    );
 
     round = next;
     tutorialPlan = plan;
     tutorialRing = null;
     roundString = nextString;
+    roundSeed = seed;
     seedLabel.textContent = `Seed ${roundString}`;
     tutorialRound = tutorial;
     arrested = null;
@@ -652,6 +699,7 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     energy = START_ENERGY;
     renderEnergy();
     showMission(null);
+    trays.reset();
     $('target').innerHTML = targetHtml(round.target, round.clues);
     tags = [];
     revealLayer.clearLayers();
@@ -660,7 +708,6 @@ async function newRound(seed = randomSeed(), tutorial = false): Promise<boolean>
     buildTowerLayer(round.towers);
     buildPedestrianLayer(round.pedestrians);
     select(null);
-    $('result').textContent = '';
     spectro.setTags(tags);
     spectro.setData(spec);
     if (audio) player.setSamples(audio);
@@ -695,11 +742,6 @@ function arrest(suspect: Pedestrian) {
     }).addTo(revealLayer);
   }
   if (!correct) hitLine.addTo(revealLayer);
-
-  const d = dist(positionAt(suspect, time), positionAt(target, time));
-  $('result').innerHTML = correct
-    ? `<b class="win">TARGET ARRESTED</b><br>${fullName(target)} (${target.id}) it is.`
-    : `<b class="hot">WRONG PERSON</b><br>You arrested ${fullName(suspect)}. The target was ${fullName(target)} (${target.id}), ${Math.round(d)} m away at ${time.toFixed(0)}s.`;
   setTime(time);
   showMission(correct);
 }
@@ -742,9 +784,12 @@ const player = new ClipPlayer();
 // Background music, loops from the first click or key press
 const music = new MusicPlayer();
 
+const playBtn = $('btn-play');
 function setPlaying(p: boolean) {
   playing = p;
-  $('btn-play').textContent = p ? 'Pause' : 'Play';
+  playBtn.innerHTML = p ? pauseIcon(26) : playIcon(26);
+  playBtn.setAttribute('aria-label', p ? 'Pause' : 'Play');
+  playBtn.title = p ? 'Pause (Space)' : 'Play (Space)';
   if (p) {
     if (time >= CLIP_SECONDS) setTime(0);
     player.play(time);
@@ -769,22 +814,37 @@ function tick(now: number) {
 }
 
 // ---------- Controls ----------
-const tagSelect = $<HTMLSelectElement>('tag-kind');
-tagSelect.innerHTML = (Object.keys(KINDS) as SourceKind[]).map((k) => `<option value="${k}">${KINDS[k].label}</option>`).join('');
-
-function addTag() {
-  tags = [...tags, { t: time, kind: tagSelect.value as SourceKind }];
+// Tag picker: the tag button opens a list of source kinds; picking one tags the playhead
+const tagPicker = $('tag-picker');
+tagPicker.innerHTML =
+  (Object.keys(KINDS) as SourceKind[])
+    .map((k) => `<button class="bar-option tag-option" data-kind="${k}" style="color:${KINDS[k].color}">${iconSvg(k, 18)}<span>${KINDS[k].label}</span></button>`)
+    .join('') + '<button class="bar-option tag-option tag-clear" data-clear>Clear tags</button>';
+const tagPopup = popup($('btn-tag'), tagPicker);
+$('btn-tag').innerHTML = tagIcon(20);
+tagPicker.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLElement>('.tag-option');
+  if (!btn) return;
+  tags = btn.dataset.kind ? [...tags, { t: time, kind: btn.dataset.kind as SourceKind }] : [];
   spectro.setTags(tags);
-}
-
-$('btn-play').addEventListener('click', () => setPlaying(!playing));
-$<HTMLInputElement>('toggle-sound').addEventListener('change', (e) => player.setMuted(!(e.target as HTMLInputElement).checked));
-$<HTMLInputElement>('toggle-music').addEventListener('change', (e) => music.setMuted(!(e.target as HTMLInputElement).checked));
-$('btn-tag').addEventListener('click', addTag);
-$('btn-clear-tags').addEventListener('click', () => {
-  tags = [];
-  spectro.setTags(tags);
+  tagPopup.close();
 });
+
+playBtn.addEventListener('click', () => setPlaying(!playing));
+setPlaying(false); // draws the play icon
+
+/** An icon button that toggles on and off; `onChange` gets the new state. */
+function iconToggle(id: string, icon: string, onChange: (on: boolean) => void) {
+  const btn = $(id);
+  btn.innerHTML = icon;
+  btn.addEventListener('click', () => {
+    const on = btn.getAttribute('aria-pressed') !== 'true';
+    btn.setAttribute('aria-pressed', String(on));
+    onChange(on);
+  });
+}
+iconToggle('toggle-sound', soundIcon(20), (on) => player.setMuted(!on));
+iconToggle('toggle-music', musicIcon(20), (on) => music.setMuted(!on));
 
 $<HTMLInputElement>('toggle-paths').addEventListener('change', (e) => {
   if ((e.target as HTMLInputElement).checked) zones.addTo(map);
@@ -792,20 +852,21 @@ $<HTMLInputElement>('toggle-paths').addEventListener('change', (e) => {
 });
 
 $('btn-new').addEventListener('click', () => void newRound());
-$('btn-zoom-in').addEventListener('click', () => spectro.zoomIn());
-$('btn-zoom-out').addEventListener('click', () => spectro.zoomOut());
-$('btn-zoom-fit').addEventListener('click', () => spectro.resetZoom());
 
 window.addEventListener('keydown', (e) => {
   if (title.visible) return; // game hotkeys are off on the title screen
   if (tutorialGuide.blocking) return; // and while a tutorial step explains the screen
   if ((e.target as HTMLElement).tagName === 'SELECT') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser zoom shortcuts alone
-  if (e.code === 'Space') {
+  if (e.key === 'Escape') {
+    closePopups();
+  } else if (e.code === 'Space') {
     e.preventDefault();
+    // Space on a focused bar button would also click it
+    (document.activeElement as HTMLElement | null)?.blur();
     setPlaying(!playing);
   } else if (e.key.toLowerCase() === 't') {
-    addTag();
+    tagPopup.toggle();
   } else if (e.key.toLowerCase() === 'm' && selection?.kind === 'person') {
     toggleMark(selection.i);
   } else if (e.key === '+' || e.key === '=') {
@@ -844,7 +905,7 @@ async function boot(seed: number, tutorial = false): Promise<boolean> {
   await nextPaint();
   const bank = await sampleData;
   if (bank) {
-    audioAssets = { samples: bank, noiseMap: await noiseMapData };
+    setRoundAssets({ samples: bank, noiseMap: await noiseMapData });
     spectralProfiles = {
       construction: profileLoop(bank.construction),
       city: profileLoop(bank.city),
@@ -869,7 +930,6 @@ async function play(seed: number, tutorial = false): Promise<boolean> {
     return await boot(seed, tutorial);
   } catch (err) {
     console.error(err);
-    $('result').textContent = 'Failed to load map data. See console.';
     setLoading('Failed to load. See console.');
     return false;
   }

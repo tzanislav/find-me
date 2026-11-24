@@ -5,6 +5,24 @@
 // The charge sound plays while held; on completion it cuts to the sting.
 
 import { playUiSound } from './audio/ui-sounds';
+import { isMobile } from './mobile';
+
+/**
+ * On mobile a button holds for its data-hold-mobile ms instead, when it has one: some
+ * mobile browsers treat a long press as a right click and open their own menu.
+ */
+export interface HoldMs {
+  desktop: number;
+  mobile: number;
+}
+
+/** The attributes that make a button a hold button. */
+export const holdAttrs = (ms: HoldMs) => `data-hold="${ms.desktop}" data-hold-mobile="${ms.mobile}"`;
+
+function holdMsOf(btn: HTMLButtonElement): number {
+  const mobile = isMobile() ? Number(btn.dataset.holdMobile) : NaN;
+  return mobile || Number(btn.dataset.hold) || 1000;
+}
 
 interface ActiveHold {
   btn: HTMLButtonElement;
@@ -54,7 +72,7 @@ document.addEventListener('pointerdown', (e) => {
   active = {
     btn,
     start: performance.now(),
-    ms: Number(btn.dataset.hold) || 1000,
+    ms: holdMsOf(btn),
     raf: 0,
     stopCharge: playUiSound('charge'),
   };
@@ -68,3 +86,7 @@ document.addEventListener('pointerout', (e) => {
   if (active && !active.btn.contains(e.relatedTarget as Node | null)) cancel();
 });
 window.addEventListener('blur', cancel);
+// No long-press menu on hold buttons
+document.addEventListener('contextmenu', (e) => {
+  if ((e.target as HTMLElement).closest?.('button[data-hold]')) e.preventDefault();
+});

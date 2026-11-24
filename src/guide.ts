@@ -1,4 +1,4 @@
-// Field guide panel (top left): a Doppler toy and reference siren samples.
+// Field guide (overlay behind the bottom bar's ? button): a Doppler toy and reference siren samples.
 // Not part of the puzzle. It teaches what a pass-by looks like on the
 // spectrogram: the pitch falls as a vehicle passes, the steepest point of the
 // fall is the closest approach, a close pass gives a sharp fall and a fast one
@@ -65,10 +65,6 @@ export class FieldGuide {
 
   constructor(root: HTMLElement) {
     root.innerHTML = `
-      <div class="guide-head">
-        <div class="title">FIELD GUIDE</div>
-        <button class="guide-toggle" title="Hide or show">+</button>
-      </div>
       <div class="guide-body">
         <div class="guide-label">Doppler pass-by</div>
         <canvas class="guide-canvas"></canvas>
@@ -94,13 +90,6 @@ export class FieldGuide {
     this.dist = q('[data-in="dist"]');
     this.speed = q('[data-in="speed"]');
     this.readout = q('.guide-readout');
-
-    const toggle = q<HTMLButtonElement>('.guide-toggle');
-    root.classList.add('collapsed'); // starts closed
-    toggle.addEventListener('click', () => {
-      const collapsed = root.classList.toggle('collapsed');
-      toggle.textContent = collapsed ? '+' : '–';
-    });
 
     for (const input of [this.dist, this.speed]) {
       input.addEventListener('input', () => this.update());

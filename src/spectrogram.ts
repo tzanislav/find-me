@@ -6,7 +6,8 @@ export interface Tag {
   kind: SourceKind;
 }
 
-const PAD = { left: 48, right: 12, top: 22, bottom: 22 };
+/** Space around the plot, px. Exported so the view scrollbar lines up with the plot. */
+export const PAD = { left: 48, right: 12, top: 22, bottom: 22 };
 const DB_MIN = 20;
 const DB_MAX = 85;
 
@@ -20,9 +21,15 @@ const STOPS: [number, [number, number, number]][] = [
   [1.0, [240, 255, 246]],
 ];
 const FONT = '"Share Tech Mono", monospace';
-const MIN_SPAN_S = 5;
+/** Narrowest time window, s. */
+export const MIN_SPAN_S = 5;
 const MIN_SPAN_HZ = 250;
 const ZOOM_STEP = 1.5;
+/** Edge zones for scrolling while scrubbing: this share of the plot width on each side, at least EDGE_MIN_PX. */
+const EDGE_SHARE = 0.12;
+const EDGE_MIN_PX = 32;
+/** At full depth in an edge zone the view scrolls this many visible spans per second. */
+const EDGE_SPANS_PER_S = 1;
 /** Smallest visible frequency window, as a fraction of the full axis height. */
 const MIN_SPAN_N = MIN_SPAN_HZ / MAX_HZ;
 /**
@@ -62,6 +69,19 @@ export class SpectrogramView {
   private n0 = 0;
   private n1 = 1;
   private pan: { x: number; y: number; t0: number; n0: number } | null = null;
+  /** Touch points on the canvas, by pointer id: where each is now. */
+  private touches = new Map<number, { x: number }>();
+  /** The first finger of a touch: when it landed and the playhead before it moved it. */
+  private touchStart: { at: number; time: number } | null = null;
+  /** Two-finger pan/zoom in progress: finger spread and the time under their midpoint at the start. */
+  private pinch: { dist: number; tMid: number; span: number } | null = null;
+  /** After a pinch, the finger left behind doesn't scrub until every finger has lifted. */
+  private touchDone = false;
+  /** Where the scrubbing pointer is (client x), and the edge scroll loop's last frame while it runs. */
+  private scrubX = 0;
+  private edgeFrame: number | null = null;
+  private lastPointerType = 'mouse';
+  private viewListeners: ((t0: number, t1: number) => void)[] = [];
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -72,9 +92,12 @@ export class SpectrogramView {
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement!);
     document.fonts.ready.then(() => this.draw());
 
-    // Left button scrubs; middle or right button pans the view.
+    // Mouse: left button scrubs; middle or right button pans the view.
+    // Touch: one finger scrubs, two fingers pan and zoom time (see the touch* methods).
     canvas.addEventListener('pointerdown', (e) => {
+      this.lastPointerType = e.pointerType;
       canvas.setPointerCapture(e.pointerId);
+      if (e.pointerType === 'touch') return this.touchDown(e);
       if (e.button === 0) {
         this.dragging = true;
         this.seekFromEvent(e);
@@ -85,6 +108,7 @@ export class SpectrogramView {
       }
     });
     canvas.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch') return this.touchMove(e);
       if (this.pan) {
         const tSpan = this.t1 - this.t0;
         const nSpan = this.n1 - this.n0;
@@ -96,7 +120,8 @@ export class SpectrogramView {
         );
       } else if (this.dragging) this.seekFromEvent(e);
     });
-    const end = () => {
+    const end = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return this.touchUp(e);
       this.dragging = false;
       if (this.pan) {
         this.pan = null;
@@ -106,7 +131,10 @@ export class SpectrogramView {
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    canvas.addEventListener('dblclick', () => this.resetZoom());
+    // A double tap is not a reset: two quick taps are just two seeks
+    canvas.addEventListener('dblclick', () => {
+      if (this.lastPointerType !== 'touch') this.resetZoom();
+    });
 
     // Wheel zooms time around the cursor. Shift+wheel, or wheel over the
     // frequency axis, zooms frequency. Horizontal trackpad swipes pan time.
@@ -133,14 +161,82 @@ export class SpectrogramView {
     );
   }
 
+  /** If the second finger lands this soon after the first, the first finger's seek is undone (it was a pinch). */
+  private static readonly PINCH_GRACE_MS = 120;
+
+  private touchDown(e: PointerEvent) {
+    this.touches.set(e.pointerId, { x: e.clientX });
+    if (this.touches.size === 1) {
+      this.touchDone = false;
+      this.touchStart = { at: performance.now(), time: this.time };
+      this.dragging = true;
+      this.seekFromEvent(e);
+    } else if (this.touches.size === 2) {
+      this.dragging = false;
+      const [a, b] = [...this.touches.values()];
+      this.pinch = { dist: Math.max(1, Math.abs(a.x - b.x)), tMid: this.tOf(this.clientToX((a.x + b.x) / 2)), span: this.t1 - this.t0 };
+      // Starting a pinch shouldn't move the playhead. Put it back only once the pinch is
+      // set, so setTime doesn't page the view to an off-screen playhead.
+      if (this.touchStart && performance.now() - this.touchStart.at < SpectrogramView.PINCH_GRACE_MS) {
+        this.onSeek(this.touchStart.time);
+      }
+    }
+  }
+
+  private touchMove(e: PointerEvent) {
+    const touch = this.touches.get(e.pointerId);
+    if (!touch) return;
+    touch.x = e.clientX;
+    if (this.pinch && this.touches.size >= 2) {
+      // Spread zooms, moving both fingers pans: the time first under the midpoint stays under it
+      const [a, b] = [...this.touches.values()];
+      const span = Math.min(CLIP_SECONDS, Math.max(MIN_SPAN_S, this.pinch.span * (this.pinch.dist / Math.max(1, Math.abs(a.x - b.x)))));
+      const midX = this.clientToX((a.x + b.x) / 2);
+      this.setView(this.pinch.tMid - ((midX - PAD.left) / this.plotW) * span, span, this.n0, this.n1 - this.n0);
+    } else if (this.dragging && !this.touchDone) {
+      this.seekFromEvent(e);
+    }
+  }
+
+  private touchUp(e: PointerEvent) {
+    this.touches.delete(e.pointerId);
+    if (this.pinch) {
+      // Ends the pinch; a finger still down waits for a fresh touch before it scrubs
+      this.pinch = null;
+      this.touchDone = true;
+    }
+    if (this.touches.size === 0) {
+      this.dragging = false;
+      this.touchDone = false;
+      this.touchStart = null;
+    }
+  }
+
+  /** Canvas x of a client (viewport) x. */
+  private clientToX(clientX: number) {
+    return clientX - this.canvas.getBoundingClientRect().left;
+  }
+
+  /** The visible time window, s. */
+  view(): { t0: number; t1: number } {
+    return { t0: this.t0, t1: this.t1 };
+  }
+
+  /** Shows the time window [t0, t1] (clamped to the clip, at least MIN_SPAN_S), keeping the frequency window. */
+  setTimeView(t0: number, t1: number) {
+    this.setView(t0, t1 - t0, this.n0, this.n1 - this.n0);
+  }
+
+  /** Called whenever the visible time window changes. */
+  onViewChange(fn: (t0: number, t1: number) => void) {
+    this.viewListeners.push(fn);
+    fn(this.t0, this.t1);
+  }
+
   setData(spec: Spectrogram) {
     this.spec = spec;
     this.renderImage();
-    this.t0 = 0;
-    this.t1 = CLIP_SECONDS;
-    this.n0 = 0;
-    this.n1 = 1;
-    this.draw();
+    this.setView(0, CLIP_SECONDS, 0, 1);
   }
 
   /** Switches the frequency axis between linear and log, keeping the visible frequency range. */
@@ -157,7 +253,7 @@ export class SpectrogramView {
   setTime(t: number) {
     this.time = t;
     // When zoomed in, page the view so the playhead stays on screen
-    if (!this.pan && (t < this.t0 || t > this.t1)) {
+    if (!this.pan && !this.pinch && (t < this.t0 || t > this.t1)) {
       const span = this.t1 - this.t0;
       this.setView(t - span * 0.05, span, this.n0, this.n1 - this.n0);
     } else this.draw();
@@ -294,6 +390,7 @@ export class SpectrogramView {
     this.n0 = Math.min(1 - nSpan, Math.max(0, n0));
     this.n1 = this.n0 + nSpan;
     this.draw();
+    this.viewListeners.forEach((fn) => fn(this.t0, this.t1));
   }
 
   private get plotW() {
@@ -317,11 +414,53 @@ export class SpectrogramView {
     return this.n0 + ((PAD.top + this.plotH - y) / this.plotH) * (this.n1 - this.n0);
   }
 
+  /** Scrubbing: the playhead goes under the pointer, and an edge zone starts the view scrolling. */
   private seekFromEvent(e: PointerEvent) {
-    const rect = this.canvas.getBoundingClientRect();
-    const t = this.tOf(e.clientX - rect.left);
-    // Clamp to the visible window so dragging past the edge does not page the view
+    this.scrubX = e.clientX;
+    this.seekAtScrub();
+    if (this.edgeFrame === null && this.edgeDepth() !== 0) {
+      this.edgeFrame = performance.now();
+      requestAnimationFrame((now) => this.edgeScroll(now));
+    }
+  }
+
+  private seekAtScrub() {
+    const t = this.tOf(this.clientToX(this.scrubX));
+    // Clamp to the visible window: past the edge the playhead waits at it while the view scrolls
     this.onSeek(Math.min(this.t1, Math.max(this.t0, Math.round(t * COLS_PER_SEC) / COLS_PER_SEC)));
+  }
+
+  /**
+   * How deep the scrubbing pointer is in an edge zone: -1..0 on the left, 0..1 on
+   * the right (capped at the plot's edge, so past it is full speed), 0 outside both.
+   */
+  private edgeDepth(): number {
+    const x = this.clientToX(this.scrubX);
+    const zone = Math.max(EDGE_MIN_PX, this.plotW * EDGE_SHARE);
+    const left = (PAD.left + zone - x) / zone;
+    if (left > 0) return -Math.min(1, left);
+    const right = (x - (PAD.left + this.plotW - zone)) / zone;
+    return right > 0 ? Math.min(1, right) : 0;
+  }
+
+  /**
+   * One frame of edge scrolling: the speed scales with the depth and the visible
+   * span, so it looks the same on screen at any zoom. Stops when scrubbing ends,
+   * the pointer leaves the zone, or the view reaches the clip's start or end.
+   */
+  private edgeScroll(now: number) {
+    const depth = this.dragging && !this.touchDone ? this.edgeDepth() : 0;
+    const atEnd = (depth < 0 && this.t0 <= 0) || (depth > 0 && this.t1 >= CLIP_SECONDS);
+    if (depth === 0 || atEnd || this.edgeFrame === null) {
+      this.edgeFrame = null;
+      return;
+    }
+    const dt = Math.min(0.1, Math.max(0, now - this.edgeFrame) / 1000); // a stalled frame doesn't jump
+    this.edgeFrame = now;
+    const span = this.t1 - this.t0;
+    this.setView(this.t0 + depth * span * EDGE_SPANS_PER_S * dt, span, this.n0, this.n1 - this.n0);
+    this.seekAtScrub(); // the playhead stays under the pointer
+    requestAnimationFrame((t) => this.edgeScroll(t));
   }
 
   private resize() {
@@ -432,14 +571,8 @@ export class SpectrogramView {
       ctx.restore();
     }
 
-    // Scroll indicators when zoomed: thin bars showing which slice is in view
+    // Frequency scroll indicator when zoomed (the view scrollbar under the canvas covers time)
     const track = 'rgba(90, 140, 255, 0.18)';
-    if (tSpan < CLIP_SECONDS) {
-      ctx.fillStyle = track;
-      ctx.fillRect(PAD.left, PAD.top + ph - 3, pw, 3);
-      ctx.fillStyle = '#2ee6ff';
-      ctx.fillRect(PAD.left + (this.t0 / CLIP_SECONDS) * pw, PAD.top + ph - 3, (tSpan / CLIP_SECONDS) * pw, 3);
-    }
     const nSpan = this.n1 - this.n0;
     if (nSpan < 1) {
       const bx = PAD.left + pw + 4;

@@ -72,60 +72,91 @@
       <section id="map-panel">
         <div id="map"></div>
 
+        <!-- Inspector (right): opens when a tower or person is selected, closes when nothing is -->
         <div class="map-overlay top-right right-col">
-          <div class="panel" id="side">
-            <div class="title">FOR YOUR SAFETY <span class="badge">PROTOTYPE</span></div>
-            <div class="muted small">One of these people recorded the sound below. Everyone's data is locked, but every phone talks to its nearest cell tower. Find the target and arrest them by ID.</div>
-            <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>            <div class="section-label">Inspector</div>
+          <div class="panel hidden" id="side">
+            <div class="section-label">Inspector</div>
             <div id="inspector" class="inspector"></div>
-            <div id="result"></div>
-            <div class="row">
-              <button id="btn-new">New round</button>
-            </div>
           </div>
         </div>
 
-        <div class="map-overlay top-left left-cols">
-          <div class="left-col">
-            <div class="panel" id="target"></div>
-            <div class="panel energy-panel">
-              <div class="energy-row"><span class="section-label">Energy</span><b id="energy-value">100</b></div>
-              <div class="energy-bar"><div id="energy-fill"></div></div>
+        <!-- Trays (trays.ts): a tab on the map edge slides each panel out -->
+        <div class="map-overlay top-left tray-col">
+          <div class="tray tray-left tray-red" data-tray="target">
+            <div class="tray-body">
+              <div class="panel" id="target"></div>
             </div>
-            <div class="panel" id="intel">
-              <div class="section-label">Data access</div>
-              <div class="muted small">Hold a button for 1 s to buy the data.</div>
-              <div id="intel-buttons"></div>
-            </div>
+            <button class="tray-tab" data-tray-tab="target"><span>Target</span></button>
           </div>
-          <div class="left-col">
-            <div class="panel" id="guide"></div>
+          <div class="tray tray-left" data-tray="tools">
+            <div class="tray-body">
+              <div class="panel energy-panel">
+                <div class="energy-row"><span class="section-label">Energy</span><b id="energy-value">100</b></div>
+                <div class="energy-bar"><div id="energy-fill"></div></div>
+              </div>
+              <div class="panel" id="intel">
+                <div class="section-label">Data access</div>
+                <div class="muted small">Hold a button for <span class="desktop-only">1 s</span><span class="mobile-only">0.5 s</span> to buy the data.</div>
+                <div id="intel-buttons"></div>
+              </div>
+              <div class="panel round-panel">
+                <label><input type="checkbox" id="toggle-paths" checked /> Show fixed source zones</label>
+                <button id="btn-new">New round</button>
+              </div>
+            </div>
+            <button class="tray-tab" data-tray-tab="tools"><span>Tools</span></button>
           </div>
         </div>
-        <div class="map-overlay bottom-right panel" id="legend"></div>
-        <div class="map-overlay" id="seed-label" title="Click to copy, paste on the title screen to replay"></div>
-        <div class="map-overlay bottom-left" id="siren-note" hidden>Note: Not all emergency vehicles have their sirens on.</div>
+        <div class="map-overlay tray tray-bottom" data-tray="legend">
+          <div class="tray-body">
+            <div class="panel" id="legend"></div>
+          </div>
+          <button class="tray-tab" data-tray-tab="legend"><span>Legend</span></button>
+        </div>
+
+        <!-- Field guide (guide.ts) behind the bottom bar's ? button, with the round's notes and seed -->
+        <div id="guide-overlay" class="map-overlay guide-overlay panel hidden">
+          <div class="guide-head">
+            <div class="title">FIELD GUIDE</div>
+            <button id="btn-guide-close" class="guide-close" title="Close (Esc)">×</button>
+          </div>
+          <div class="guide-scroll">
+            <div class="guide-game">FOR YOUR SAFETY <span class="badge">PROTOTYPE</span></div>
+            <div class="muted small">One of these people recorded the sound below. Everyone's data is locked, but every phone talks to its nearest cell tower. Find the target and arrest them by ID.</div>
+            <div id="siren-note" class="siren-note" hidden>Note: not all emergency vehicles have their sirens on.</div>
+            <div id="guide"></div>
+            <div id="seed-label" title="Click to copy, paste on the title screen to replay"></div>
+          </div>
+        </div>
       </section>
 
-      <!-- Bottom 1/3: spectrogram -->
+      <!-- Bottom: spectrogram, then the play bar -->
       <section id="spectro-panel">
-        <div id="spectro-toolbar">
-          <button id="btn-play">Play</button>
-          <span id="time-readout">00.0 s</span>
-          <label><input type="checkbox" id="toggle-sound" checked /> Sound</label>
-          <label><input type="checkbox" id="toggle-music" checked /> Music</label>
-          <span class="sep"></span>
-          <label>Tag as <select id="tag-kind"></select></label>
-          <button id="btn-tag">Tag at playhead (T)</button>
-          <button id="btn-clear-tags">Clear tags</button>
-          <span class="sep"></span>
-          <button id="btn-zoom-out" title="Zoom out (-)">−</button>
-          <button id="btn-zoom-in" title="Zoom in (+)">+</button>
-          <button id="btn-zoom-fit" title="Show whole clip (0)">Fit</button>
-          <label title="Log frequency scale: gives the low pitches more room"><input type="checkbox" id="toggle-log-freq" checked /> Log</label>
-          <span class="hint">Click or drag to scrub. Wheel zooms time, Shift+wheel zooms frequency, right-drag pans, double-click resets.</span>
-        </div>
         <div id="spectro-wrap"><canvas id="spectro"></canvas></div>
+        <!-- Which slice of the clip is in view (spectro-scrollbar.ts) -->
+        <div id="spectro-scroll" class="vscroll"></div>
+        <div id="bottom-bar">
+          <div class="bar-side bar-left">
+            <div class="menu-wrap">
+              <button id="btn-menu" class="icon-btn" title="Menu" aria-label="Menu" aria-expanded="false"></button>
+              <div id="game-menu" class="panel bar-popup game-menu hidden">
+                <button class="bar-option" data-menu="restart">Restart</button>
+                <button class="bar-option" data-menu="main">Main Menu</button>
+              </div>
+            </div>
+            <button id="btn-guide" class="icon-btn guide-btn" title="Field guide" aria-expanded="false">?</button>
+            <span id="time-readout">00.0 s</span>
+          </div>
+          <button id="btn-play" class="play-btn" title="Play (Space)" aria-label="Play"></button>
+          <div class="bar-side bar-right">
+            <div class="tag-wrap">
+              <button id="btn-tag" class="icon-btn" title="Tag the timeline (T)" aria-label="Tag" aria-expanded="false"></button>
+              <div id="tag-picker" class="panel bar-popup tag-picker hidden"></div>
+            </div>
+            <button id="toggle-sound" class="icon-btn toggle-icon" title="Sound" aria-label="Sound" aria-pressed="true"></button>
+            <button id="toggle-music" class="icon-btn toggle-icon" title="Music" aria-label="Music" aria-pressed="true"></button>
+          </div>
+        </div>
       </section>
     </div>
     <script type="module" src="/src/main.ts"></script>

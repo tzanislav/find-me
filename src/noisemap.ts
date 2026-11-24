@@ -35,6 +35,13 @@ interface Transform {
   ty: number;
 }
 
+export interface NoiseMapData {
+  db: Float32Array;
+  width: number;
+  height: number;
+  tf: Transform;
+}
+
 export class NoiseMap {
   private readonly cos: number;
   private readonly sin: number;
@@ -47,6 +54,15 @@ export class NoiseMap {
   ) {
     this.cos = Math.cos(tf.rotation);
     this.sin = Math.sin(tf.rotation);
+  }
+
+  /** Plain data, to send to the round worker (a class doesn't survive postMessage). */
+  toData(): NoiseMapData {
+    return { db: this.db, width: this.width, height: this.height, tf: this.tf };
+  }
+
+  static fromData(d: NoiseMapData): NoiseMap {
+    return new NoiseMap(d.db, d.width, d.height, d.tf);
   }
 
   /**
